@@ -3,13 +3,13 @@ package behavior
 import (
 	"github.com/google/wire"
 	"github.com/tony-zhuo/rule-engine/service/base/behavior/model"
-	behaviorPostgres "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/postgres"
+	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	"github.com/tony-zhuo/rule-engine/service/base/behavior/usecase"
 )
 
 var BehaviorRepoSet = wire.NewSet(
-	behaviorPostgres.NewBehaviorRepo,
-	wire.Bind(new(model.BehaviorRepoInterface), new(*behaviorPostgres.BehaviorRepo)),
+	behaviorDB.NewBehaviorRepo,
+	wire.Bind(new(model.BehaviorRepoInterface), new(*behaviorDB.BehaviorRepo)),
 )
 
 var BehaviorUsecaseSet = wire.NewSet(
