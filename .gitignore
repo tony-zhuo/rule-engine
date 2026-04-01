@@ -1,1 +1,36 @@
+# IDE
 .idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+/vendor/
+*.exe
+*.test
+*.out
+/tmp/
+/bin/
+
+# Build output
+/dist/
+rule-engine-api
+
+# Environment & config
+*.env
+.env
+.env.*
+config.yaml
+config.yml
+config.local.yaml
+!config.example.yaml
+
+# Logs
+*.log
+
+# Wire generated (keep wire_gen.go, ignore wire debug)
+wire-gen.log
