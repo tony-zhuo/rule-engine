@@ -14,9 +14,10 @@ import (
 
 func InitializeRuleController(cfg *config.Config) *controller.RuleController {
 	db := provideGormDB(cfg)
+	rdb := provideRedisClient(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
-	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC)
+	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC, rdb)
 	behaviorRepo := behaviorDB.NewBehaviorRepo(db)
 	behaviorUC := behaviorUsecase.NewBehaviorUsecase(behaviorRepo)
 	engineUC := usecase.NewEngineUsecase(ruleStrategyUC, behaviorUC)
@@ -25,9 +26,10 @@ func InitializeRuleController(cfg *config.Config) *controller.RuleController {
 
 func InitializeEventController(cfg *config.Config) *controller.EventController {
 	db := provideGormDB(cfg)
+	rdb := provideRedisClient(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
-	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC)
+	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC, rdb)
 	behaviorRepo := behaviorDB.NewBehaviorRepo(db)
 	behaviorUC := behaviorUsecase.NewBehaviorUsecase(behaviorRepo)
 	engineUC := usecase.NewEngineUsecase(ruleStrategyUC, behaviorUC)
