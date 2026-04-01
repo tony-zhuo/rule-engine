@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,9 +106,35 @@ func (uc *EngineUsecase) ProcessEvent(ctx context.Context, req *ProcessEventReq)
 		return nil, fmt.Errorf("process event: list active rules: %w", err)
 	}
 
+	// Collect all aggregate keys from all rules and deduplicate.
+	var allKeys []ruleModel.AggregateKey
+	seen := make(map[string]struct{})
+	for _, rule := range rules {
+		for _, k := range ruleModel.CollectAggregateKeys(rule.RuleNode) {
+			ck := k.CacheKey()
+			if _, ok := seen[ck]; !ok {
+				seen[ck] = struct{}{}
+				allKeys = append(allKeys, k)
+			}
+		}
+	}
+
+	// Batch query all aggregation results.
+	cache := make(map[string]any, len(allKeys))
+	now := time.Now()
+	for _, k := range allKeys {
+		cond := buildAggregateCond(req.MemberID, k, now)
+		result, err := uc.behaviorUC.Aggregate(ctx, cond)
+		if err != nil {
+			continue
+		}
+		cache[k.CacheKey()] = result
+	}
+
+	// Evaluate rules with preloaded context.
 	resp := &ProcessEventResp{}
 	for _, rule := range rules {
-		evalCtx := ruleUsecase.NewDBEvalContext(req.MemberID, req.Fields, uc.behaviorUC)
+		evalCtx := ruleUsecase.NewPreloadedEvalContext(req.Fields, cache)
 		matched, err := uc.ruleStrategyUC.Evaluate(rule.RuleNode, evalCtx)
 		if err != nil {
 			continue
@@ -117,4 +144,34 @@ func (uc *EngineUsecase) ProcessEvent(ctx context.Context, req *ProcessEventReq)
 		}
 	}
 	return resp, nil
+}
+
+func buildAggregateCond(memberID string, k ruleModel.AggregateKey, now time.Time) *behaviorModel.AggregateCond {
+	parts := strings.SplitN(k.Field, ":", 3)
+	fieldPath := ""
+	if len(parts) == 3 {
+		fieldPath = parts[2]
+	}
+
+	var since time.Time
+	if k.Window != nil {
+		switch strings.ToLower(k.Window.Unit) {
+		case "minutes":
+			since = now.Add(-time.Duration(k.Window.Value) * time.Minute)
+		case "hours":
+			since = now.Add(-time.Duration(k.Window.Value) * time.Hour)
+		case "days":
+			since = now.Add(-time.Duration(k.Window.Value) * 24 * time.Hour)
+		default:
+			since = now.Add(-time.Duration(k.Window.Value) * time.Minute)
+		}
+	}
+
+	return &behaviorModel.AggregateCond{
+		MemberID:    memberID,
+		Behavior:    behaviorModel.BehaviorType(parts[0]),
+		Aggregation: strings.ToUpper(parts[1]),
+		FieldPath:   fieldPath,
+		Since:       since,
+	}
 }

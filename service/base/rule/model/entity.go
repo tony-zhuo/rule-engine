@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 type RuleNode struct {
 	Type     NodeType    `json:"type"`
@@ -35,3 +39,42 @@ type RuleStrategy struct {
 }
 
 func (RuleStrategy) TableName() string { return "rule_strategies" }
+
+// AggregateKey represents a unique aggregation query needed during rule evaluation.
+type AggregateKey struct {
+	Field  string
+	Window *TimeWindow
+}
+
+// CacheKey returns a unique string key for deduplication.
+func (k AggregateKey) CacheKey() string {
+	if k.Window == nil {
+		return k.Field
+	}
+	return fmt.Sprintf("%s|%d%s", k.Field, k.Window.Value, k.Window.Unit)
+}
+
+// CollectAggregateKeys walks a RuleNode tree and returns all aggregation fields (containing ":").
+func CollectAggregateKeys(node RuleNode) []AggregateKey {
+	seen := make(map[string]struct{})
+	var keys []AggregateKey
+	collectKeys(node, seen, &keys)
+	return keys
+}
+
+func collectKeys(node RuleNode, seen map[string]struct{}, keys *[]AggregateKey) {
+	if node.Type == NodeCondition {
+		if strings.Contains(node.Field, ":") {
+			k := AggregateKey{Field: node.Field, Window: node.Window}
+			ck := k.CacheKey()
+			if _, ok := seen[ck]; !ok {
+				seen[ck] = struct{}{}
+				*keys = append(*keys, k)
+			}
+		}
+		return
+	}
+	for _, child := range node.Children {
+		collectKeys(child, seen, keys)
+	}
+}
