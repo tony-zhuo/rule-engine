@@ -3,7 +3,7 @@ package db
 import (
 	"sync"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -14,7 +14,7 @@ var (
 
 func Init(dsn string) {
 	once.Do(func() {
-		db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 		if err != nil {
 			panic("failed to connect database: " + err.Error())
 		}

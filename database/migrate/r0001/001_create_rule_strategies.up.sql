@@ -1,11 +1,11 @@
 CREATE TABLE IF NOT EXISTS rule_strategies (
-    id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    name       VARCHAR(255)    NOT NULL,
+    id          BIGSERIAL       PRIMARY KEY,
+    name        VARCHAR(255)    NOT NULL,
     description TEXT,
-    rule_node  JSON            NOT NULL,
-    status     TINYINT         NOT NULL DEFAULT 1 COMMENT '1=active 2=inactive',
-    created_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    updated_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (id),
-    INDEX idx_status (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    rule_node   JSONB           NOT NULL,
+    status      SMALLINT        NOT NULL DEFAULT 1,
+    created_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rule_strategies_status ON rule_strategies (status);

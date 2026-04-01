@@ -18,7 +18,7 @@ type BehaviorLog struct {
 	MemberID   string       `gorm:"size:128;not null"`
 	PlatformID string       `gorm:"size:128;not null;default:''"`
 	Behavior   BehaviorType `gorm:"size:64;not null"`
-	Fields     string       `gorm:"type:json;not null"` // raw JSON
+	Fields     string       `gorm:"type:jsonb;not null"` // raw JSON
 	OccurredAt time.Time    `gorm:"not null"`
 	CreatedAt  time.Time
 }

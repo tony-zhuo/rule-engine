@@ -28,7 +28,7 @@ type RuleStrategy struct {
 	Name         string             `gorm:"size:255;not null"`
 	Description  string             `gorm:"type:text"`
 	RuleNode     RuleNode           `gorm:"-"`
-	RuleNodeJSON string             `gorm:"column:rule_node;type:json;not null"`
+	RuleNodeJSON string             `gorm:"column:rule_node;type:jsonb;not null"`
 	Status       RuleStrategyStatus `gorm:"not null;default:1"`
 	CreatedAt    time.Time
 	UpdatedAt    time.Time

@@ -4,6 +4,10 @@ type App struct {
 	Addr string `mapstructure:"addr"`
 }
 
+type DB struct {
+	DSN string `mapstructure:"dsn"`
+}
+
 type Redis struct {
 	Addr     string `mapstructure:"addr"`
 	Password string `mapstructure:"password"`

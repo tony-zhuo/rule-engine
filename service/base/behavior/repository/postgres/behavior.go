@@ -1,4 +1,4 @@
-package mysql
+package postgres
 
 import (
 	"context"
@@ -46,7 +46,8 @@ func (r *BehaviorRepo) Aggregate(ctx context.Context, cond *model.AggregateCond)
 	if agg == "COUNT" || cond.FieldPath == "" {
 		q = q.Select("COALESCE(COUNT(*), 0)")
 	} else {
-		q = q.Select(fmt.Sprintf("COALESCE(%s(JSON_EXTRACT(fields, '$.%s')), 0)", agg, cond.FieldPath))
+		// PostgreSQL JSONB syntax: (fields->>'field_path')::numeric
+		q = q.Select(fmt.Sprintf("COALESCE(%s((fields->>'%s')::numeric), 0)", agg, cond.FieldPath))
 	}
 	if err := q.Scan(&result).Error; err != nil {
 		return 0, fmt.Errorf("aggregate: %w", err)

@@ -3,7 +3,7 @@ package rule
 import (
 	"github.com/google/wire"
 	"github.com/tony-zhuo/rule-engine/service/base/rule/model"
-	ruleMySQL "github.com/tony-zhuo/rule-engine/service/base/rule/repository/mysql"
+	rulePostgres "github.com/tony-zhuo/rule-engine/service/base/rule/repository/postgres"
 	"github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
 )
 
@@ -13,8 +13,8 @@ var RuleUsecaseSet = wire.NewSet(
 )
 
 var RuleStrategyRepoSet = wire.NewSet(
-	ruleMySQL.NewRuleStrategyRepo,
-	wire.Bind(new(model.RuleStrategyRepoInterface), new(*ruleMySQL.RuleStrategyRepo)),
+	rulePostgres.NewRuleStrategyRepo,
+	wire.Bind(new(model.RuleStrategyRepoInterface), new(*rulePostgres.RuleStrategyRepo)),
 )
 
 var RuleStrategyUsecaseSet = wire.NewSet(
