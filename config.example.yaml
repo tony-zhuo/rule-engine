@@ -2,7 +2,13 @@ app:
   addr: ":8080"
 
 db:
-  dsn: "host=localhost user=rule_engine password=rule_engine dbname=rule_engine port=5432 sslmode=disable TimeZone=UTC"
+  host: "localhost"
+  user: "rule_engine"
+  password: "rule_engine"
+  dbname: "rule_engine"
+  port: 5432
+  sslmode: "disable"
+  timezone: "UTC"
 
 redis:
   addr: "localhost:6379"

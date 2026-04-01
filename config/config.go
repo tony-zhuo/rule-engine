@@ -21,11 +21,6 @@ func Load() (*Config, error) {
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
 
-	viper.SetDefault("app.addr", ":8080")
-	viper.SetDefault("redis.addr", "localhost:6379")
-	viper.SetDefault("redis.db", 0)
-	viper.SetDefault("log.level", "info")
-
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
