@@ -3,6 +3,7 @@ module github.com/tony-zhuo/rule-engine
 go 1.25.0
 
 require (
+	github.com/confluentinc/confluent-kafka-go/v2 v2.13.3
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
 	github.com/google/wire v0.7.0

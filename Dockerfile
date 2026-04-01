@@ -1,12 +1,15 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25 AS builder
 WORKDIR /app
+RUN apt-get update && apt-get install -y librdkafka-dev && rm -rf /var/lib/apt/lists/*
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /rule-engine-api ./cmd/apis
+RUN go build -o /rule-engine-api ./cmd/apis
+RUN go build -o /rule-engine-worker ./cmd/worker
 
-FROM alpine:3.20
-RUN apk --no-cache add ca-certificates tzdata
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates tzdata librdkafka1 && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /rule-engine-api /rule-engine-api
+COPY --from=builder /rule-engine-worker /rule-engine-worker
 EXPOSE 8080
 ENTRYPOINT ["/rule-engine-api"]

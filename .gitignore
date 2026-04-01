@@ -19,6 +19,7 @@ Thumbs.db
 # Build output
 /dist/
 rule-engine-api
+rule-engine-worker
 
 # Environment & config
 *.env

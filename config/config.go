@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/viper"
 	"github.com/tony-zhuo/rule-engine/pkg/db"
+	"github.com/tony-zhuo/rule-engine/pkg/kafka"
 	"github.com/tony-zhuo/rule-engine/pkg/logs"
 	"github.com/tony-zhuo/rule-engine/pkg/redis"
 )
@@ -13,6 +14,7 @@ type Config struct {
 	App   App               `mapstructure:"app"`
 	DB    db.DBConfig       `mapstructure:"db"`
 	Redis redis.RedisConfig `mapstructure:"redis"`
+	Kafka kafka.KafkaConfig `mapstructure:"kafka"`
 	Log   logs.LogConfig    `mapstructure:"log"`
 }
 

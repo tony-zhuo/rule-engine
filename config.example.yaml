@@ -15,5 +15,12 @@ redis:
   password: ""
   db: 0
 
+kafka:
+  brokers: "localhost:9092"
+  consumer_group: "rule-engine-worker"
+  topics:
+    events: "rule-engine-events"
+    results: "rule-engine-results"
+
 log:
   level: "info"
