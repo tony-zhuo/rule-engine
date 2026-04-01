@@ -28,4 +28,3 @@ func provideKafkaProducer(cfg *config.Config) *kafka.Producer {
 	}
 	return p
 }
-

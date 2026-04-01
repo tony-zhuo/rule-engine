@@ -20,6 +20,8 @@ Thumbs.db
 /dist/
 rule-engine-api
 rule-engine-worker
+/apis
+/worker
 
 # Environment & config
 *.env

@@ -11,8 +11,8 @@ import (
 )
 
 func InitializeRuleController(cfg *config.Config) *controller.RuleController {
-	db := provideGormDB(cfg)
-	rdb := provideRedisClient(cfg)
+	db := provideGormDB()
+	rdb := provideRedisClient()
 	producer := provideKafkaProducer(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
@@ -22,8 +22,8 @@ func InitializeRuleController(cfg *config.Config) *controller.RuleController {
 }
 
 func InitializeEventController(cfg *config.Config) *controller.EventController {
-	db := provideGormDB(cfg)
-	rdb := provideRedisClient(cfg)
+	db := provideGormDB()
+	rdb := provideRedisClient()
 	producer := provideKafkaProducer(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
