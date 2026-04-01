@@ -4,6 +4,7 @@ import "github.com/tony-zhuo/rule-engine/config"
 
 type Conf struct {
 	App   config.App   `mapstructure:"app"`
+	DB    config.DB    `mapstructure:"db"`
 	Redis config.Redis `mapstructure:"redis"`
 	Log   config.Log   `mapstructure:"log"`
 }

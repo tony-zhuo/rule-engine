@@ -7,4 +7,5 @@ import (
 )
 
 var EngineUsecaseSet = wire.NewSet(usecase.NewEngineUsecase)
-var EngineCtrlSet = wire.NewSet(controller.GetEngineController)
+var RuleCtrlSet = wire.NewSet(controller.GetRuleController)
+var EventCtrlSet = wire.NewSet(controller.GetEventController)

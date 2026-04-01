@@ -14,7 +14,8 @@ func ApiRegister() {
 	r.Use(gin.Recovery())
 
 	v1 := r.Group("/v1")
-	router.EngineRegister(v1)
+	router.RuleRegister(v1)
+	router.EventRegister(v1)
 
 	srv := &http.Server{
 		Addr:    conf.App.Addr,

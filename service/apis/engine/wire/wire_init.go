@@ -2,14 +2,14 @@ package wire
 
 import (
 	"github.com/google/wire"
-	pkgredis "github.com/tony-zhuo/rule-engine/pkg/redis"
+	pkgdb "github.com/tony-zhuo/rule-engine/pkg/db"
 	"github.com/tony-zhuo/rule-engine/service/apis/engine/initialize"
-
-	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 )
 
-var ConfigSet = wire.NewSet(provideRedis)
+var ConfigSet = wire.NewSet(provideGormDB)
 
-func provideRedis(_ *initialize.Conf) *redis.Client {
-	return pkgredis.GetClient()
+func provideGormDB(conf *initialize.Conf) *gorm.DB {
+	pkgdb.Init(conf.DB.DSN)
+	return pkgdb.GetDB()
 }
