@@ -12,9 +12,13 @@ var (
 	instance *gorm.DB
 )
 
-func Init(dsn string) {
+type DBConfig struct {
+	DSN string `mapstructure:"dsn"`
+}
+
+func Init(config DBConfig) {
 	once.Do(func() {
-		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		db, err := gorm.Open(postgres.Open(config.DSN), &gorm.Config{})
 		if err != nil {
 			panic("failed to connect database: " + err.Error())
 		}

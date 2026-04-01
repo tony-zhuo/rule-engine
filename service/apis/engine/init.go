@@ -1,14 +1,9 @@
 package engine
 
 import (
-	"github.com/tony-zhuo/rule-engine/service/apis/engine/initialize"
+	"github.com/tony-zhuo/rule-engine/config"
 )
 
-func Init() {
-	initialize.InitConf()
-}
-
-func InitRoute() {
-	Init()
-	ApiRegister()
+func InitRoute(cfg *config.Config) {
+	ApiRegister(cfg)
 }

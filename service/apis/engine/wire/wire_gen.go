@@ -3,8 +3,8 @@
 package wire
 
 import (
+	"github.com/tony-zhuo/rule-engine/config"
 	"github.com/tony-zhuo/rule-engine/service/apis/engine/controller"
-	"github.com/tony-zhuo/rule-engine/service/apis/engine/initialize"
 	"github.com/tony-zhuo/rule-engine/service/apis/engine/usecase"
 	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	behaviorUsecase "github.com/tony-zhuo/rule-engine/service/base/behavior/usecase"
@@ -12,8 +12,8 @@ import (
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
 )
 
-func InitializeRuleController(conf *initialize.Conf) *controller.RuleController {
-	db := provideGormDB(conf)
+func InitializeRuleController(cfg *config.Config) *controller.RuleController {
+	db := provideGormDB(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
 	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC)
@@ -23,8 +23,8 @@ func InitializeRuleController(conf *initialize.Conf) *controller.RuleController 
 	return controller.GetRuleController(engineUC)
 }
 
-func InitializeEventController(conf *initialize.Conf) *controller.EventController {
-	db := provideGormDB(conf)
+func InitializeEventController(cfg *config.Config) *controller.EventController {
+	db := provideGormDB(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
 	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC)

@@ -11,12 +11,18 @@ var (
 	client *redis.Client
 )
 
-func Init(addr, password string, db int) {
+type RedisConfig struct {
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+}
+
+func Init(config RedisConfig) {
 	once.Do(func() {
 		client = redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Password: password,
-			DB:       db,
+			Addr:     config.Addr,
+			Password: config.Password,
+			DB:       config.DB,
 		})
 	})
 }

@@ -2,12 +2,12 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/tony-zhuo/rule-engine/service/apis/engine/initialize"
+	"github.com/tony-zhuo/rule-engine/config"
 	"github.com/tony-zhuo/rule-engine/service/apis/engine/wire"
 )
 
-func RuleRegister(app *gin.RouterGroup) {
-	ctrl := wire.InitializeRuleController(initialize.GetConf())
+func RuleRegister(app *gin.RouterGroup, cfg *config.Config) {
+	ctrl := wire.InitializeRuleController(cfg)
 	g := app.Group("/rules")
 	g.GET("", ctrl.List)
 	g.POST("", ctrl.Create)
