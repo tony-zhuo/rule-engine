@@ -4,7 +4,7 @@ import (
 	"log"
 
 	"github.com/tony-zhuo/rule-engine/config"
-	engine "github.com/tony-zhuo/rule-engine/service/apis/engine"
+	"github.com/tony-zhuo/rule-engine/service/bff/apis"
 )
 
 func main() {
@@ -12,5 +12,5 @@ func main() {
 	if err != nil {
 		log.Fatal("failed to load config: ", err)
 	}
-	engine.InitRoute(cfg)
+	apis.InitRoute(cfg)
 }

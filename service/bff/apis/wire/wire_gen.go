@@ -4,8 +4,8 @@ package wire
 
 import (
 	"github.com/tony-zhuo/rule-engine/config"
-	"github.com/tony-zhuo/rule-engine/service/apis/engine/controller"
-	"github.com/tony-zhuo/rule-engine/service/apis/engine/usecase"
+	"github.com/tony-zhuo/rule-engine/service/bff/apis/controller"
+	"github.com/tony-zhuo/rule-engine/service/bff/apis/usecase"
 	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	behaviorUsecase "github.com/tony-zhuo/rule-engine/service/base/behavior/usecase"
 	ruleDB "github.com/tony-zhuo/rule-engine/service/base/rule/repository/db"

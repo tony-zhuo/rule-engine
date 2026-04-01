@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tony-zhuo/rule-engine/service/apis/engine/usecase"
+	"github.com/tony-zhuo/rule-engine/service/bff/apis/usecase"
 )
 
 var (

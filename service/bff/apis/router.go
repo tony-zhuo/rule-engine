@@ -1,11 +1,11 @@
-package engine
+package apis
 
 import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tony-zhuo/rule-engine/config"
-	"github.com/tony-zhuo/rule-engine/service/apis/engine/router"
+	"github.com/tony-zhuo/rule-engine/service/bff/apis/router"
 )
 
 func ApiRegister(cfg *config.Config) {
