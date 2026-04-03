@@ -87,7 +87,6 @@ Process a behavioral event through all registered CEP patterns.
 ```json
 {
   "member_id": "member-42",
-  "platform_id": "platform-1",
   "behavior": "CryptoWithdraw",
   "fields": { "target_address": "0xABCD..." },
   "occurred_at": "2024-01-01T00:00:00Z"

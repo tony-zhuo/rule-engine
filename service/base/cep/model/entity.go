@@ -31,7 +31,6 @@ type PatternProgress struct {
 
 type Event struct {
 	MemberID   string         `json:"member_id"`
-	PlatformID string         `json:"platform_id"`
 	Behavior   string         `json:"behavior"`
 	Fields     map[string]any `json:"fields"`
 	OccurredAt time.Time      `json:"occurred_at"`

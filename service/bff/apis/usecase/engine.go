@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/google/uuid"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
@@ -25,8 +26,8 @@ type EngineUsecaseInterface interface {
 }
 
 type ProcessEventReq struct {
-	MemberID   string                     `json:"member_id"   binding:"required"`
-	PlatformID string                     `json:"platform_id"`
+	EventID  string                     `json:"event_id"`
+	MemberID string                     `json:"member_id"   binding:"required"`
 	Behavior   behaviorModel.BehaviorType `json:"behavior"    binding:"required"`
 	Fields     map[string]any             `json:"fields"`
 	OccurredAt time.Time                  `json:"occurred_at"`
@@ -82,6 +83,9 @@ func (uc *EngineUsecase) SetRuleStatus(ctx context.Context, id uint64, status ru
 
 // ProcessEvent produces the event to Kafka for async processing by the worker.
 func (uc *EngineUsecase) ProcessEvent(ctx context.Context, req *ProcessEventReq) error {
+	if req.EventID == "" {
+		req.EventID = uuid.New().String()
+	}
 	if req.OccurredAt.IsZero() {
 		req.OccurredAt = time.Now()
 	}

@@ -2,14 +2,18 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 )
+
+var ErrDuplicateEvent = errors.New("duplicate event")
 
 var (
 	_behaviorRepoOnce sync.Once
@@ -30,8 +34,17 @@ func NewBehaviorRepo(db *gorm.DB) *BehaviorRepo {
 }
 
 func (r *BehaviorRepo) Create(ctx context.Context, obj *model.BehaviorLog) error {
-	if err := r.db.WithContext(ctx).Create(obj).Error; err != nil {
-		return fmt.Errorf("behavior repo create: %w", err)
+	result := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "event_id"}},
+			DoNothing: true,
+		}).
+		Create(obj)
+	if result.Error != nil {
+		return fmt.Errorf("behavior repo create: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrDuplicateEvent
 	}
 	return nil
 }

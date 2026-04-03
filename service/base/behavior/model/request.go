@@ -3,8 +3,8 @@ package model
 import "time"
 
 type LogBehaviorReq struct {
-	MemberID   string         `json:"member_id"   binding:"required"`
-	PlatformID string         `json:"platform_id"`
+	EventID  string         `json:"event_id"`
+	MemberID string         `json:"member_id"   binding:"required"`
 	Behavior   BehaviorType   `json:"behavior"    binding:"required"`
 	Fields     map[string]any `json:"fields"`
 	OccurredAt time.Time      `json:"occurred_at"`

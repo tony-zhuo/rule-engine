@@ -40,8 +40,8 @@ func (uc *BehaviorUsecase) Log(ctx context.Context, req *model.LogBehaviorReq) (
 	}
 
 	obj := &model.BehaviorLog{
+		EventID:    req.EventID,
 		MemberID:   req.MemberID,
-		PlatformID: req.PlatformID,
 		Behavior:   req.Behavior,
 		Fields:     string(fieldsJSON),
 		OccurredAt: occurredAt,

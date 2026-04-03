@@ -15,8 +15,8 @@ import (
 )
 
 type EventMessage struct {
-	MemberID   string                     `json:"member_id"`
-	PlatformID string                     `json:"platform_id"`
+	EventID  string                     `json:"event_id"`
+	MemberID string                     `json:"member_id"`
 	Behavior   behaviorModel.BehaviorType `json:"behavior"`
 	Fields     map[string]any             `json:"fields"`
 	OccurredAt time.Time                  `json:"occurred_at"`
@@ -62,10 +62,10 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		return fmt.Errorf("unmarshal event: %w", err)
 	}
 
-	// 1. Log behavior.
+	// 1. Log behavior (idempotent via event_id unique constraint).
 	if _, err := h.behaviorUC.Log(ctx, &behaviorModel.LogBehaviorReq{
-		MemberID:   event.MemberID,
-		PlatformID: event.PlatformID,
+		EventID:  event.EventID,
+		MemberID: event.MemberID,
 		Behavior:   event.Behavior,
 		Fields:     event.Fields,
 		OccurredAt: event.OccurredAt,

@@ -141,7 +141,7 @@ func demo2CEP() {
 	sharedAddress := "0xABCDEF1234567890"
 
 	event1 := &cepModel.Event{
-		MemberID: memberID, PlatformID: "platform-1",
+		MemberID: memberID,
 		Behavior:   "CryptoDeposit",
 		Fields:     map[string]any{"source_address": sharedAddress, "amount": float64(50_000)},
 		OccurredAt: now,
@@ -150,7 +150,7 @@ func demo2CEP() {
 	fmt.Printf("After CryptoDeposit:               matches=%d  err=%v\n", len(results1), err)
 
 	event2 := &cepModel.Event{
-		MemberID: memberID, PlatformID: "platform-1",
+		MemberID: memberID,
 		Behavior:   "CryptoWithdraw",
 		Fields:     map[string]any{"target_address": sharedAddress, "amount": float64(49_000)},
 		OccurredAt: now.Add(5 * time.Minute),
@@ -167,7 +167,7 @@ func demo2CEP() {
 	proc3.AddPattern(depositThenWithdraw)
 	_, _ = proc3.ProcessEvent(ctx, event1)
 	event3 := &cepModel.Event{
-		MemberID: memberID, PlatformID: "platform-1",
+		MemberID: memberID,
 		Behavior:   "CryptoWithdraw",
 		Fields:     map[string]any{"target_address": "0xDIFFERENT", "amount": float64(49_000)},
 		OccurredAt: now.Add(5 * time.Minute),

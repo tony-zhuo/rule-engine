@@ -10,14 +10,9 @@ import (
 	"github.com/tony-zhuo/rule-engine/pkg/redis"
 )
 
-type WorkerConfig struct {
-	PoolSize int `mapstructure:"pool_size"`
-}
-
 type Config struct {
-	App    App               `mapstructure:"app"`
-	Worker WorkerConfig      `mapstructure:"worker"`
-	DB     db.DBConfig       `mapstructure:"db"`
+	App   App               `mapstructure:"app"`
+	DB    db.DBConfig       `mapstructure:"db"`
 	Redis  redis.RedisConfig `mapstructure:"redis"`
 	Kafka  kafka.KafkaConfig `mapstructure:"kafka"`
 	Log    logs.LogConfig    `mapstructure:"log"`

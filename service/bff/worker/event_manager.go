@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/gammazero/workerpool"
 	"github.com/tony-zhuo/rule-engine/config"
 	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
 	workerUsecase "github.com/tony-zhuo/rule-engine/service/bff/worker/usecase"
@@ -18,17 +17,15 @@ type EventManager struct {
 	cfg      *config.Config
 	handler  *workerUsecase.EventUsecase
 	producer *kafka.Producer
-	poolSize int
 }
 
-func NewEventManager(ctx context.Context, cfg *config.Config, handler *workerUsecase.EventUsecase, producer *kafka.Producer, poolSize int) *EventManager {
+func NewEventManager(ctx context.Context, cfg *config.Config, handler *workerUsecase.EventUsecase, producer *kafka.Producer) *EventManager {
 	return &EventManager{
 		ctx:      ctx,
 		name:     "event_manager",
 		cfg:      cfg,
 		handler:  handler,
 		producer: producer,
-		poolSize: poolSize,
 	}
 }
 
@@ -37,7 +34,7 @@ func (m *EventManager) Name() string {
 }
 
 func (m *EventManager) Run() error {
-	slog.Info("event manager running", "pool_size", m.poolSize, "topic", m.cfg.Kafka.Topics.Events, "group", m.cfg.Kafka.ConsumerGroup)
+	slog.Info("event manager running", "topic", m.cfg.Kafka.Topics.Events, "group", m.cfg.Kafka.ConsumerGroup)
 
 	consumer, err := pkgkafka.NewConsumer(m.cfg.Kafka)
 	if err != nil {
@@ -48,9 +45,6 @@ func (m *EventManager) Run() error {
 	if err := consumer.Subscribe(m.cfg.Kafka.Topics.Events, nil); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
 	}
-
-	wp := workerpool.New(m.poolSize)
-	defer wp.StopWait()
 
 	for {
 		select {
@@ -63,16 +57,13 @@ func (m *EventManager) Run() error {
 			}
 			switch msg := ev.(type) {
 			case *kafka.Message:
-				captured := msg
-				wp.Submit(func() {
-					if err := m.handler.Execute(captured); err != nil {
-						slog.Error("worker: execute failed", "error", err, "offset", captured.TopicPartition.Offset)
-						return
-					}
-					if _, err := consumer.CommitMessage(captured); err != nil {
-						slog.Error("worker: commit failed", "error", err, "offset", captured.TopicPartition.Offset)
-					}
-				})
+				if err := m.handler.Execute(msg); err != nil {
+					slog.Error("worker: execute failed", "error", err, "offset", msg.TopicPartition.Offset)
+					continue
+				}
+				if _, err := consumer.CommitMessage(msg); err != nil {
+					slog.Error("worker: commit failed", "error", err, "offset", msg.TopicPartition.Offset)
+				}
 			case kafka.Error:
 				slog.Error("kafka consumer error", "error", msg)
 			}

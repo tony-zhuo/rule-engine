@@ -177,7 +177,7 @@ func (p *CEPUsecase) matchState(event *model.Event, state model.PatternState, va
 	}
 	fields["behavior"] = event.Behavior
 	fields["member_id"] = event.MemberID
-	fields["platform_id"] = event.PlatformID
+
 
 	evalCtx := ruleModel.NewMapContext(fields)
 	if len(vars) > 0 {

@@ -79,12 +79,7 @@ func workerInit(ctx context.Context) {
 
 	handler := workerUsecase.NewEventUsecase(behaviorUC, ruleStrategyUC, producer, cfg.Kafka.Topics.Results)
 
-	poolSize := cfg.Worker.PoolSize
-	if poolSize <= 0 {
-		poolSize = 4
-	}
-
-	Register(NewEventManager(ctx, cfg, handler, producer, poolSize))
+	Register(NewEventManager(ctx, cfg, handler, producer))
 }
 
 func enableWorker() {
