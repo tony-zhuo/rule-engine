@@ -9,6 +9,10 @@ type ProgressStore interface {
 	ListByMember(ctx context.Context, memberID string) ([]*PatternProgress, error)
 }
 
+type CEPPatternRepoInterface interface {
+	ListActive(ctx context.Context) ([]CEPPattern, error)
+}
+
 type ProcessorInterface interface {
 	AddPattern(pattern CEPPattern)
 	ProcessEvent(ctx context.Context, event *Event) ([]*MatchResult, error)

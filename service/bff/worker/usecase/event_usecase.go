@@ -9,6 +9,7 @@ import (
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
+	cepModel "github.com/tony-zhuo/rule-engine/service/base/cep/model"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
 	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
@@ -23,9 +24,10 @@ type EventMessage struct {
 }
 
 type MatchResult struct {
-	MemberID     string        `json:"member_id"`
-	MatchedRules []MatchedRule `json:"matched_rules"`
-	ProcessedAt  time.Time     `json:"processed_at"`
+	MemberID        string           `json:"member_id"`
+	MatchedRules    []MatchedRule    `json:"matched_rules,omitempty"`
+	MatchedPatterns []MatchedPattern `json:"matched_patterns,omitempty"`
+	ProcessedAt     time.Time        `json:"processed_at"`
 }
 
 type MatchedRule struct {
@@ -33,9 +35,16 @@ type MatchedRule struct {
 	Name string `json:"name"`
 }
 
+type MatchedPattern struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Variables map[string]any `json:"variables,omitempty"`
+}
+
 type EventUsecase struct {
 	behaviorUC     behaviorModel.BehaviorUsecaseInterface
 	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface
+	cepProcessor   cepModel.ProcessorInterface
 	producer       *kafka.Producer
 	resultsTopic   string
 }
@@ -43,12 +52,14 @@ type EventUsecase struct {
 func NewEventUsecase(
 	behaviorUC behaviorModel.BehaviorUsecaseInterface,
 	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface,
+	cepProcessor cepModel.ProcessorInterface,
 	producer *kafka.Producer,
 	resultsTopic string,
 ) *EventUsecase {
 	return &EventUsecase{
 		behaviorUC:     behaviorUC,
 		ruleStrategyUC: ruleStrategyUC,
+		cepProcessor:   cepProcessor,
 		producer:       producer,
 		resultsTopic:   resultsTopic,
 	}
@@ -121,15 +132,38 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		matched = append(matched, MatchedRule{ID: rule.ID, Name: rule.Name})
 	}
 
-	if len(matched) == 0 {
+	// 5. CEP pattern matching.
+	var matchedPatterns []MatchedPattern
+	if h.cepProcessor != nil {
+		cepEvent := &cepModel.Event{
+			MemberID:   event.MemberID,
+			Behavior:   string(event.Behavior),
+			Fields:     event.Fields,
+			OccurredAt: event.OccurredAt,
+		}
+		cepResults, err := h.cepProcessor.ProcessEvent(ctx, cepEvent)
+		if err != nil {
+			return fmt.Errorf("cep process event: %w", err)
+		}
+		for _, r := range cepResults {
+			matchedPatterns = append(matchedPatterns, MatchedPattern{
+				ID:        r.PatternID,
+				Name:      r.PatternName,
+				Variables: r.Variables,
+			})
+		}
+	}
+
+	if len(matched) == 0 && len(matchedPatterns) == 0 {
 		return nil
 	}
 
-	// 5. Produce match results.
+	// 6. Produce match results.
 	result := MatchResult{
-		MemberID:     event.MemberID,
-		MatchedRules: matched,
-		ProcessedAt:  time.Now(),
+		MemberID:        event.MemberID,
+		MatchedRules:    matched,
+		MatchedPatterns: matchedPatterns,
+		ProcessedAt:     time.Now(),
 	}
 	data, err := json.Marshal(result)
 	if err != nil {

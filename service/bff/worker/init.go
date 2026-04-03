@@ -11,6 +11,9 @@ import (
 
 	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	behaviorUsecase "github.com/tony-zhuo/rule-engine/service/base/behavior/usecase"
+	cepDB "github.com/tony-zhuo/rule-engine/service/base/cep/repository/db"
+	cepRedis "github.com/tony-zhuo/rule-engine/service/base/cep/repository/redis"
+	cepUsecase "github.com/tony-zhuo/rule-engine/service/base/cep/usecase"
 	ruleDB "github.com/tony-zhuo/rule-engine/service/base/rule/repository/db"
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
 
@@ -77,7 +80,21 @@ func workerInit(ctx context.Context) {
 	ruleUC := ruleUsecase.NewRuleUsecase()
 	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC, rdb)
 
-	handler := workerUsecase.NewEventUsecase(behaviorUC, ruleStrategyUC, producer, cfg.Kafka.Topics.Results)
+	// CEP: load patterns from DB, use Redis for progress state.
+	cepPatternRepo := cepDB.NewCEPPatternRepo(db)
+	cepStore := cepRedis.NewRedisStore(rdb)
+	cepUC := cepUsecase.NewCEPUsecase(cepStore, ruleUC)
+
+	patterns, err := cepPatternRepo.ListActive(context.Background())
+	if err != nil {
+		log.Fatal("failed to load CEP patterns: ", err)
+	}
+	for _, p := range patterns {
+		cepUC.AddPattern(p)
+	}
+	slog.Info("CEP patterns loaded", "count", len(patterns))
+
+	handler := workerUsecase.NewEventUsecase(behaviorUC, ruleStrategyUC, cepUC, producer, cfg.Kafka.Topics.Results)
 
 	Register(NewEventManager(ctx, cfg, handler, producer))
 }
