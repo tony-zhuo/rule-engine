@@ -84,7 +84,7 @@ func workerInit(ctx context.Context) {
 		poolSize = 4
 	}
 
-	Register(NewEventManager(ctx, cfg, handler, poolSize))
+	Register(NewEventManager(ctx, cfg, handler, producer, poolSize))
 }
 
 func enableWorker() {
@@ -95,6 +95,9 @@ func enableWorker() {
 			slog.Info("worker started", "name", m.Name())
 			if err := m.Run(); err != nil {
 				slog.Error("worker error", "name", m.Name(), "error", err)
+			}
+			if err := m.Shutdown(); err != nil {
+				slog.Error("worker shutdown error", "name", m.Name(), "error", err)
 			}
 			slog.Info("worker stopped", "name", m.Name())
 		}(m)

@@ -1,6 +1,8 @@
 package wire
 
 import (
+	"sync"
+
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/google/wire"
 	goredis "github.com/redis/go-redis/v9"
@@ -11,7 +13,12 @@ import (
 	"gorm.io/gorm"
 )
 
-var ConfigSet = wire.NewSet(provideGormDB, provideRedisClient, provideKafkaProducer)
+var (
+	ConfigSet = wire.NewSet(provideGormDB, provideRedisClient, provideKafkaProducer)
+
+	producerOnce sync.Once
+	producerInst *kafka.Producer
+)
 
 func provideGormDB() *gorm.DB {
 	return pkgdb.GetDB()
@@ -22,10 +29,20 @@ func provideRedisClient() *goredis.Client {
 }
 
 func provideKafkaProducer(cfg *config.Config) *kafka.Producer {
-	p, err := pkgkafka.NewProducer(cfg.Kafka)
-	if err != nil {
-		panic("failed to create kafka producer: " + err.Error())
+	producerOnce.Do(func() {
+		p, err := pkgkafka.NewProducer(cfg.Kafka)
+		if err != nil {
+			panic("failed to create kafka producer: " + err.Error())
+		}
+		producerInst = p
+	})
+	return producerInst
+}
+
+func CloseProducer() {
+	if producerInst != nil {
+		producerInst.Flush(10000)
+		producerInst.Close()
 	}
-	return p
 }
 

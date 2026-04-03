@@ -3,7 +3,7 @@ package usecase
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
+	"fmt"
 	"strings"
 	"time"
 
@@ -54,13 +54,12 @@ func NewEventUsecase(
 	}
 }
 
-func (h *EventUsecase) Execute(msg *kafka.Message) {
+func (h *EventUsecase) Execute(msg *kafka.Message) error {
 	ctx := context.Background()
 
 	var event EventMessage
 	if err := json.Unmarshal(msg.Value, &event); err != nil {
-		slog.Error("worker: unmarshal event", "error", err)
-		return
+		return fmt.Errorf("unmarshal event: %w", err)
 	}
 
 	// 1. Log behavior.
@@ -71,15 +70,13 @@ func (h *EventUsecase) Execute(msg *kafka.Message) {
 		Fields:     event.Fields,
 		OccurredAt: event.OccurredAt,
 	}); err != nil {
-		slog.Error("worker: log behavior", "error", err, "member_id", event.MemberID)
-		return
+		return fmt.Errorf("log behavior: %w", err)
 	}
 
 	// 2. List active rules (from Redis cache).
 	rules, err := h.ruleStrategyUC.ListActive(ctx)
 	if err != nil {
-		slog.Error("worker: list active rules", "error", err)
-		return
+		return fmt.Errorf("list active rules: %w", err)
 	}
 
 	// 3. Preload aggregate conditions.
@@ -118,7 +115,7 @@ func (h *EventUsecase) Execute(msg *kafka.Message) {
 	}
 
 	if len(matched) == 0 {
-		return
+		return nil
 	}
 
 	// 5. Produce match results.
@@ -129,12 +126,12 @@ func (h *EventUsecase) Execute(msg *kafka.Message) {
 	}
 	data, err := json.Marshal(result)
 	if err != nil {
-		slog.Error("worker: marshal result", "error", err)
-		return
+		return fmt.Errorf("marshal result: %w", err)
 	}
 	if err := pkgkafka.Produce(h.producer, h.resultsTopic, event.MemberID, data); err != nil {
-		slog.Error("worker: produce result", "error", err, "member_id", event.MemberID)
+		return fmt.Errorf("produce result: %w", err)
 	}
+	return nil
 }
 
 func buildAggregateCond(memberID string, k ruleModel.AggregateKey, now time.Time) *behaviorModel.AggregateCond {

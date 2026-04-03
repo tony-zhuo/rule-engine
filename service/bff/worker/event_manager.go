@@ -17,15 +17,17 @@ type EventManager struct {
 	name     string
 	cfg      *config.Config
 	handler  *workerUsecase.EventUsecase
+	producer *kafka.Producer
 	poolSize int
 }
 
-func NewEventManager(ctx context.Context, cfg *config.Config, handler *workerUsecase.EventUsecase, poolSize int) *EventManager {
+func NewEventManager(ctx context.Context, cfg *config.Config, handler *workerUsecase.EventUsecase, producer *kafka.Producer, poolSize int) *EventManager {
 	return &EventManager{
 		ctx:      ctx,
 		name:     "event_manager",
 		cfg:      cfg,
 		handler:  handler,
+		producer: producer,
 		poolSize: poolSize,
 	}
 }
@@ -63,7 +65,13 @@ func (m *EventManager) Run() error {
 			case *kafka.Message:
 				captured := msg
 				wp.Submit(func() {
-					m.handler.Execute(captured)
+					if err := m.handler.Execute(captured); err != nil {
+						slog.Error("worker: execute failed", "error", err, "offset", captured.TopicPartition.Offset)
+						return
+					}
+					if _, err := consumer.CommitMessage(captured); err != nil {
+						slog.Error("worker: commit failed", "error", err, "offset", captured.TopicPartition.Offset)
+					}
 				})
 			case kafka.Error:
 				slog.Error("kafka consumer error", "error", msg)
@@ -73,6 +81,11 @@ func (m *EventManager) Run() error {
 }
 
 func (m *EventManager) Shutdown() error {
+	remaining := m.producer.Flush(10000)
+	if remaining > 0 {
+		slog.Warn("producer flush incomplete", "remaining", remaining)
+	}
+	m.producer.Close()
 	return nil
 }
 

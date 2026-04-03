@@ -170,3 +170,8 @@ go run ./examples/main.go
 go run ./cmd/server/main.go
 # Listens on :8080
 ```
+
+## TODO
+
+- [ ] 驗證每個場景的交易行為
+- [ ] 每秒 10,000 event 時的效能

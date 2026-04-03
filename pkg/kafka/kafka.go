@@ -20,6 +20,7 @@ type Topics struct {
 func NewProducer(cfg KafkaConfig) (*kafka.Producer, error) {
 	p, err := kafka.NewProducer(&kafka.ConfigMap{
 		"bootstrap.servers": cfg.Brokers,
+		"acks":              -1,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new producer: %w", err)
@@ -29,9 +30,10 @@ func NewProducer(cfg KafkaConfig) (*kafka.Producer, error) {
 
 func NewConsumer(cfg KafkaConfig) (*kafka.Consumer, error) {
 	c, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers": cfg.Brokers,
-		"group.id":          cfg.ConsumerGroup,
-		"auto.offset.reset": "earliest",
+		"bootstrap.servers":  cfg.Brokers,
+		"group.id":           cfg.ConsumerGroup,
+		"auto.offset.reset":  "earliest",
+		"enable.auto.commit": false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)
@@ -40,9 +42,19 @@ func NewConsumer(cfg KafkaConfig) (*kafka.Consumer, error) {
 }
 
 func Produce(p *kafka.Producer, topic, key string, value []byte) error {
-	return p.Produce(&kafka.Message{
+	deliveryCh := make(chan kafka.Event, 1)
+	if err := p.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
 		Key:            []byte(key),
 		Value:          value,
-	}, nil)
+	}, deliveryCh); err != nil {
+		return fmt.Errorf("kafka: produce: %w", err)
+	}
+
+	e := <-deliveryCh
+	m := e.(*kafka.Message)
+	if m.TopicPartition.Error != nil {
+		return fmt.Errorf("kafka: delivery failed: %w", m.TopicPartition.Error)
+	}
+	return nil
 }
