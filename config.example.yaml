@@ -1,6 +1,9 @@
 app:
   addr: ":8080"
 
+worker:
+  pool_size: 4
+
 db:
   host: "localhost"
   user: "rule_engine"

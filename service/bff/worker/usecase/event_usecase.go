@@ -1,4 +1,4 @@
-package worker
+package usecase
 
 import (
 	"context"
@@ -33,20 +33,20 @@ type MatchedRule struct {
 	Name string `json:"name"`
 }
 
-type Handler struct {
+type EventUsecase struct {
 	behaviorUC     behaviorModel.BehaviorUsecaseInterface
 	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface
 	producer       *kafka.Producer
 	resultsTopic   string
 }
 
-func NewHandler(
+func NewEventUsecase(
 	behaviorUC behaviorModel.BehaviorUsecaseInterface,
 	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface,
 	producer *kafka.Producer,
 	resultsTopic string,
-) *Handler {
-	return &Handler{
+) *EventUsecase {
+	return &EventUsecase{
 		behaviorUC:     behaviorUC,
 		ruleStrategyUC: ruleStrategyUC,
 		producer:       producer,
@@ -54,7 +54,7 @@ func NewHandler(
 	}
 }
 
-func (h *Handler) HandleMessage(msg *kafka.Message) {
+func (h *EventUsecase) Execute(msg *kafka.Message) {
 	ctx := context.Background()
 
 	var event EventMessage
