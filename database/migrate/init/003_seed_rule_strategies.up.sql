@@ -1,9 +1,10 @@
 -- Seed rule strategies for testing
+-- 名詞定義：入金/出金 = 法幣，入幣/提幣 = 加密貨幣
 
--- Rule 1: 單筆大額提款 (單筆提款 > 100,000)
+-- Rule 1: 單筆大額提幣 (單筆提幣 > 100,000)
 INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
-    '單筆大額提款',
-    '單筆加密貨幣提款金額超過 100,000',
+    '單筆大額提幣',
+    '單筆加密貨幣提幣金額超過 100,000',
     '{
         "type": "AND",
         "children": [
@@ -28,20 +29,26 @@ INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
     1
 );
 
--- Rule 3: 大額入金後快速出金 (入金 > 50,000 且 1 小時內出金 > 1 次)
+-- Rule 3: 大額入金後快速提幣 (提幣時，1 小時內有大額入金 > 50,000)
 INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
-    '大額入金後快速出金',
-    '單筆入金超過 50,000 且 1 小時內有出金行為',
+    '大額入金後快速提幣',
+    '提幣時，1 小時內曾有單筆入金超過 50,000',
     '{
         "type": "AND",
         "children": [
-            {"type": "CONDITION", "field": "behavior", "operator": "=", "value": "FiatDeposit"},
-            {"type": "CONDITION", "field": "amount", "operator": ">", "value": 50000},
+            {"type": "CONDITION", "field": "behavior", "operator": "=", "value": "CryptoWithdraw"},
             {
                 "type": "CONDITION",
-                "field": "CryptoWithdraw:COUNT",
+                "field": "FiatDeposit:COUNT",
                 "operator": ">",
                 "value": 0,
+                "window": {"value": 1, "unit": "hours"}
+            },
+            {
+                "type": "CONDITION",
+                "field": "FiatDeposit:MAX:amount",
+                "operator": ">",
+                "value": 50000,
                 "window": {"value": 1, "unit": "hours"}
             }
         ]
@@ -49,10 +56,10 @@ INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
     1
 );
 
--- Rule 4: 異常登入 + 提款 (非常用國家登入且有提款行為)
+-- Rule 4: 異常登入後提幣 (非常用國家登入後執行提幣)
 INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
-    '異常登入後提款',
-    '從非常��國家登入後執行提款',
+    '異常登入後提幣',
+    '從非常用國家登入後執行加密貨幣提幣',
     '{
         "type": "AND",
         "children": [
@@ -70,10 +77,10 @@ INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
     1
 );
 
--- Rule 5: 分散小額出金 (24 小時內出金次數 > 10 且單筆 < 10,000)
+-- Rule 5: 分散小額提幣 (24 小時內提幣次數 > 10 且單筆 < 10,000)
 INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
-    '分散小額出金',
-    '24 小時內出金超過 10 次且單筆金額低於 10,000，疑似拆分洗錢',
+    '分散小額提幣',
+    '24 小時內提幣超過 10 次且單筆金額低於 10,000，疑似拆分洗錢',
     '{
         "type": "AND",
         "children": [
@@ -91,10 +98,10 @@ INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
     1
 );
 
--- Rule 6: 累積大額出金 (7 天內出金總額 > 500,000)
+-- Rule 6: 累積大額提幣 (7 天內提幣總額 > 500,000)
 INSERT INTO rule_strategies (name, description, rule_node, status) VALUES (
-    '累積大額出金',
-    '7 天內加密貨幣出金總額超過 500,000',
+    '累積大額提幣',
+    '7 天內加密貨幣提幣總額超過 500,000',
     '{
         "type": "CONDITION",
         "field": "CryptoWithdraw:SUM:amount",

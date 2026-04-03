@@ -54,6 +54,10 @@ services:
       - "8080:8080"
     volumes:
       - ./config.yaml:/app/config.yaml
+    environment:
+      DB_HOST: postgres
+      REDIS_ADDR: "redis:6379"
+      KAFKA_BROKERS: "kafka:29092"
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,6 +73,10 @@ services:
     entrypoint: ["/rule-engine-worker"]
     volumes:
       - ./config.yaml:/app/config.yaml
+    environment:
+      DB_HOST: postgres
+      REDIS_ADDR: "redis:6379"
+      KAFKA_BROKERS: "kafka:29092"
     depends_on:
       postgres:
         condition: service_healthy

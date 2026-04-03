@@ -1,4 +1,4 @@
-.PHONY: build run-api run-worker migrate migrate-down docker-up docker-down tidy
+.PHONY: build run-api run-worker migrate migrate-down docker-up docker-down docker-reset tidy kafka-topics kafka-consume kafka-lag kafka-describe
 
 # Database
 DB_USER ?= rule_engine
@@ -7,6 +7,12 @@ DB_HOST ?= localhost
 DB_PORT ?= 5432
 DB_NAME ?= rule_engine
 MIGRATE_DIR = database/migrate/init
+
+# Kafka
+KAFKA_CONTAINER ?= rule-engine-kafka-1
+KAFKA_BOOTSTRAP ?= localhost:9092
+KAFKA_TOPIC ?= rule-engine-events
+KAFKA_GROUP ?= rule-engine-worker
 
 # Build
 build:
@@ -35,10 +41,27 @@ migrate-down:
 
 # Docker
 docker-up:
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
-	docker-compose down
+	docker compose down
+
+docker-reset:
+	docker compose down -v
+	docker compose up -d --build
+
+# Kafka
+kafka-topics:
+	docker exec $(KAFKA_CONTAINER) kafka-topics --bootstrap-server $(KAFKA_BOOTSTRAP) --list
+
+kafka-describe:
+	docker exec $(KAFKA_CONTAINER) kafka-topics --bootstrap-server $(KAFKA_BOOTSTRAP) --topic $(KAFKA_TOPIC) --describe
+
+kafka-consume:
+	docker exec -it $(KAFKA_CONTAINER) kafka-console-consumer --bootstrap-server $(KAFKA_BOOTSTRAP) --topic $(KAFKA_TOPIC) --from-beginning
+
+kafka-lag:
+	docker exec $(KAFKA_CONTAINER) kafka-consumer-groups --bootstrap-server $(KAFKA_BOOTSTRAP) --group $(KAFKA_GROUP) --describe
 
 # Go
 tidy:

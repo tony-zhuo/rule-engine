@@ -104,9 +104,16 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 	}
 
 	// 4. Evaluate rules.
+	fields := make(map[string]any, len(event.Fields)+2)
+	for k, v := range event.Fields {
+		fields[k] = v
+	}
+	fields["behavior"] = string(event.Behavior)
+	fields["member_id"] = event.MemberID
+
 	var matched []MatchedRule
 	for _, rule := range rules {
-		evalCtx := ruleUsecase.NewPreloadedEvalContext(event.Fields, cache)
+		evalCtx := ruleUsecase.NewPreloadedEvalContext(fields, cache)
 		ok, err := h.ruleStrategyUC.Evaluate(rule.RuleNode, evalCtx)
 		if err != nil || !ok {
 			continue

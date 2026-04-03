@@ -8,6 +8,7 @@ RUN go build -o /rule-engine-api ./cmd/apis
 RUN go build -o /rule-engine-worker ./cmd/worker
 
 FROM debian:bookworm-slim
+WORKDIR /app
 RUN apt-get update && apt-get install -y ca-certificates tzdata librdkafka1 && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /rule-engine-api /rule-engine-api
 COPY --from=builder /rule-engine-worker /rule-engine-worker

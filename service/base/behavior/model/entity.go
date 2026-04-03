@@ -15,7 +15,7 @@ const (
 
 type BehaviorLog struct {
 	ID         uint64       `gorm:"primaryKey;autoIncrement"`
-	EventID  string       `gorm:"size:36;not null;default:''"`
+	EventID  string       `gorm:"size:36;not null"`
 	MemberID string       `gorm:"size:128;not null"`
 	Behavior   BehaviorType `gorm:"size:64;not null"`
 	Fields     string       `gorm:"type:jsonb;not null"` // raw JSON
