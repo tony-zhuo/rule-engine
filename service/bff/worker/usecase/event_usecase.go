@@ -8,16 +8,16 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 	cepModel "github.com/tony-zhuo/rule-engine/service/base/cep/model"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
-	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
 )
 
 type EventMessage struct {
-	EventID  string                     `json:"event_id"`
-	MemberID string                     `json:"member_id"`
+	EventID    string                     `json:"event_id"`
+	MemberID   string                     `json:"member_id"`
 	Behavior   behaviorModel.BehaviorType `json:"behavior"`
 	Fields     map[string]any             `json:"fields"`
 	OccurredAt time.Time                  `json:"occurred_at"`
@@ -75,8 +75,8 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 
 	// 1. Log behavior (idempotent via event_id unique constraint).
 	if _, err := h.behaviorUC.Log(ctx, &behaviorModel.LogBehaviorReq{
-		EventID:  event.EventID,
-		MemberID: event.MemberID,
+		EventID:    event.EventID,
+		MemberID:   event.MemberID,
 		Behavior:   event.Behavior,
 		Fields:     event.Fields,
 		OccurredAt: event.OccurredAt,
@@ -134,24 +134,22 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 
 	// 5. CEP pattern matching.
 	var matchedPatterns []MatchedPattern
-	if h.cepProcessor != nil {
-		cepEvent := &cepModel.Event{
-			MemberID:   event.MemberID,
-			Behavior:   string(event.Behavior),
-			Fields:     event.Fields,
-			OccurredAt: event.OccurredAt,
-		}
-		cepResults, err := h.cepProcessor.ProcessEvent(ctx, cepEvent)
-		if err != nil {
-			return fmt.Errorf("cep process event: %w", err)
-		}
-		for _, r := range cepResults {
-			matchedPatterns = append(matchedPatterns, MatchedPattern{
-				ID:        r.PatternID,
-				Name:      r.PatternName,
-				Variables: r.Variables,
-			})
-		}
+	cepEvent := &cepModel.Event{
+		MemberID:   event.MemberID,
+		Behavior:   string(event.Behavior),
+		Fields:     event.Fields,
+		OccurredAt: event.OccurredAt,
+	}
+	cepResults, err := h.cepProcessor.ProcessEvent(ctx, cepEvent)
+	if err != nil {
+		return fmt.Errorf("cep process event: %w", err)
+	}
+	for _, r := range cepResults {
+		matchedPatterns = append(matchedPatterns, MatchedPattern{
+			ID:        r.PatternID,
+			Name:      r.PatternName,
+			Variables: r.Variables,
+		})
 	}
 
 	if len(matched) == 0 && len(matchedPatterns) == 0 {

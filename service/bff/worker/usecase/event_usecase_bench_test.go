@@ -11,6 +11,10 @@ import (
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	behaviorUsecase "github.com/tony-zhuo/rule-engine/service/base/behavior/usecase"
+	cepModel "github.com/tony-zhuo/rule-engine/service/base/cep/model"
+	cepDB "github.com/tony-zhuo/rule-engine/service/base/cep/repository/db"
+	cepRedis "github.com/tony-zhuo/rule-engine/service/base/cep/repository/redis"
+	cepUsecase "github.com/tony-zhuo/rule-engine/service/base/cep/usecase"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 	ruleDB "github.com/tony-zhuo/rule-engine/service/base/rule/repository/db"
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
@@ -51,7 +55,20 @@ func setupIntegration(tb testing.TB) *EventUsecase {
 	ruleUC := ruleUsecase.NewRuleUsecase()
 	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC, rdb)
 
-	return NewEventUsecase(behaviorUC, ruleStrategyUC, nil, producer, "rule-engine-results")
+	// CEP: load patterns from DB, use Redis for progress state.
+	cepPatternRepo := cepDB.NewCEPPatternRepo(db)
+	cepStore := cepRedis.NewRedisStore(rdb)
+	cepUC := cepUsecase.NewCEPUsecase(cepStore, ruleUC)
+
+	patterns, err := cepPatternRepo.ListActive(context.Background())
+	if err != nil {
+		tb.Fatalf("failed to load CEP patterns: %v", err)
+	}
+	for _, p := range patterns {
+		cepUC.AddPattern(p)
+	}
+
+	return NewEventUsecase(behaviorUC, ruleStrategyUC, cepUC, producer, "rule-engine-results")
 }
 
 func buildMessage(eventID, memberID string, behavior behaviorModel.BehaviorType, fields map[string]any) *kafka.Message {
@@ -139,6 +156,13 @@ func BenchmarkExecute_Integration_HighAggregation(b *testing.B) {
 }
 
 // --- Unit benchmarks (no external deps) ---
+
+type mockCEPProcessor struct{}
+
+func (m *mockCEPProcessor) AddPattern(_ cepModel.CEPPattern) {}
+func (m *mockCEPProcessor) ProcessEvent(_ context.Context, _ *cepModel.Event) ([]*cepModel.MatchResult, error) {
+	return nil, nil
+}
 
 type mockBehaviorUC struct{}
 
@@ -250,7 +274,7 @@ func BenchmarkExecute_Unit(b *testing.B) {
 	handler := &EventUsecase{
 		behaviorUC:     &mockBehaviorUC{},
 		ruleStrategyUC: &mockRuleStrategyUC{rules: buildMockRules()},
-		cepProcessor:   nil,
+		cepProcessor:   &mockCEPProcessor{},
 		producer:       nil,
 		resultsTopic:   "test-results",
 	}
@@ -283,6 +307,7 @@ func BenchmarkExecute_Unit_ManyRules(b *testing.B) {
 	handler := &EventUsecase{
 		behaviorUC:     &mockBehaviorUC{},
 		ruleStrategyUC: &mockRuleStrategyUC{rules: manyRules},
+		cepProcessor:   &mockCEPProcessor{},
 		producer:       nil,
 		resultsTopic:   "test-results",
 	}
