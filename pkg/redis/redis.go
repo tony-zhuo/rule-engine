@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/redis/go-redis/v9"
@@ -12,17 +13,20 @@ var (
 )
 
 type RedisConfig struct {
-	Addr     string `mapstructure:"addr"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
+	MasterName    string `mapstructure:"master_name"`
+	SentinelAddrs string `mapstructure:"sentinel_addrs"`
+	Password      string `mapstructure:"password"`
+	DB            int    `mapstructure:"db"`
 }
 
 func Init(config RedisConfig) {
 	once.Do(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr:     config.Addr,
-			Password: config.Password,
-			DB:       config.DB,
+		addrs := strings.Split(config.SentinelAddrs, ",")
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    config.MasterName,
+			SentinelAddrs: addrs,
+			Password:      config.Password,
+			DB:            config.DB,
 		})
 	})
 }

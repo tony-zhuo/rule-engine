@@ -14,7 +14,8 @@ db:
   timezone: "UTC"
 
 redis:
-  addr: "localhost:6379"
+  master_name: "mymaster"
+  sentinel_addrs: "localhost:26379"
   password: ""
   db: 0
 
