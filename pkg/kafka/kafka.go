@@ -42,6 +42,9 @@ func NewConsumer(cfg KafkaConfig) (*kafka.Consumer, error) {
 }
 
 func Produce(p *kafka.Producer, topic, key string, value []byte) error {
+	if p == nil {
+		return nil
+	}
 	deliveryCh := make(chan kafka.Event, 1)
 	if err := p.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},

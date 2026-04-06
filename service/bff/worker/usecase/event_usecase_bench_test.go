@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func setupIntegration(tb testing.TB) *EventUsecase {
 		Host: "localhost", User: "rule_engine", Password: "rule_engine",
 		DBName: "rule_engine", Port: 5432, SSLMode: "disable", TimeZone: "UTC",
 	})
-	pkgredis.Init(pkgredis.RedisConfig{Addr: "localhost:6379"})
+	pkgredis.Init(pkgredis.RedisConfig{MasterName: "mymaster", SentinelAddrs: "localhost:26379"})
 
 	db := pkgdb.GetDB()
 	rdb := pkgredis.GetClient()
@@ -93,11 +94,12 @@ func buildMessage(eventID, memberID string, behavior behaviorModel.BehaviorType,
 // Run: go test -bench=BenchmarkExecute_Integration -benchtime=10s -count=3 ./service/bff/worker/usecase/
 func BenchmarkExecute_Integration(b *testing.B) {
 	handler := setupIntegration(b)
+	prefix := rand.Int63()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		msg := buildMessage(
-			fmt.Sprintf("bench-%d", i),
+			fmt.Sprintf("bench-%d-%d", prefix, i),
 			fmt.Sprintf("bench-member-%d", i%100),
 			behaviorModel.BehaviorCryptoWithdraw,
 			map[string]any{"amount": 150000, "target_address": "0xBENCH"},
@@ -111,11 +113,12 @@ func BenchmarkExecute_Integration(b *testing.B) {
 // BenchmarkExecute_Integration_NoMatch benchmarks events that don't match any rule.
 func BenchmarkExecute_Integration_NoMatch(b *testing.B) {
 	handler := setupIntegration(b)
+	prefix := rand.Int63()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		msg := buildMessage(
-			fmt.Sprintf("bench-nomatch-%d", i),
+			fmt.Sprintf("bench-nomatch-%d-%d", prefix, i),
 			fmt.Sprintf("bench-member-%d", i%100),
 			behaviorModel.BehaviorTrade,
 			map[string]any{"amount": 100, "pair": "BTC/USDT"},
@@ -129,11 +132,12 @@ func BenchmarkExecute_Integration_NoMatch(b *testing.B) {
 // BenchmarkExecute_Integration_HighAggregation benchmarks events with many aggregate queries.
 func BenchmarkExecute_Integration_HighAggregation(b *testing.B) {
 	handler := setupIntegration(b)
+	prefix := rand.Int63()
 
 	// Pre-seed some behavior logs for aggregation queries to have data.
 	for i := 0; i < 50; i++ {
 		msg := buildMessage(
-			fmt.Sprintf("bench-seed-%d", i),
+			fmt.Sprintf("bench-seed-%d-%d", prefix, i),
 			"bench-member-agg",
 			behaviorModel.BehaviorCryptoWithdraw,
 			map[string]any{"amount": 10000, "target_address": "0xSEED"},
@@ -144,7 +148,7 @@ func BenchmarkExecute_Integration_HighAggregation(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		msg := buildMessage(
-			fmt.Sprintf("bench-agg-%d", i),
+			fmt.Sprintf("bench-agg-%d-%d", prefix, i),
 			"bench-member-agg",
 			behaviorModel.BehaviorCryptoWithdraw,
 			map[string]any{"amount": 5000, "target_address": "0xAGG"},

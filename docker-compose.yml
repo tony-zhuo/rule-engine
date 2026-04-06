@@ -57,16 +57,16 @@ services:
     image: redis:7-alpine
     ports:
       - "26379:26379"
-    command: >
-      sh -c '
-      cat > /tmp/sentinel.conf <<EOF
-      port 26379
-      sentinel monitor mymaster redis-master 6379 2
-      sentinel down-after-milliseconds mymaster 5000
-      sentinel failover-timeout mymaster 10000
-      sentinel parallel-syncs mymaster 1
-      EOF
-      redis-sentinel /tmp/sentinel.conf'
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "port 26379" > /tmp/sentinel.conf
+        echo "sentinel resolve-hostnames yes" >> /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis-master 6379 2" >> /tmp/sentinel.conf
+        echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
+        echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
+        echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
+        redis-sentinel /tmp/sentinel.conf
     depends_on:
       redis-master:
         condition: service_healthy
@@ -82,16 +82,16 @@ services:
 
   redis-sentinel-2:
     image: redis:7-alpine
-    command: >
-      sh -c '
-      cat > /tmp/sentinel.conf <<EOF
-      port 26379
-      sentinel monitor mymaster redis-master 6379 2
-      sentinel down-after-milliseconds mymaster 5000
-      sentinel failover-timeout mymaster 10000
-      sentinel parallel-syncs mymaster 1
-      EOF
-      redis-sentinel /tmp/sentinel.conf'
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "port 26379" > /tmp/sentinel.conf
+        echo "sentinel resolve-hostnames yes" >> /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis-master 6379 2" >> /tmp/sentinel.conf
+        echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
+        echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
+        echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
+        redis-sentinel /tmp/sentinel.conf
     depends_on:
       redis-master:
         condition: service_healthy
@@ -107,16 +107,16 @@ services:
 
   redis-sentinel-3:
     image: redis:7-alpine
-    command: >
-      sh -c '
-      cat > /tmp/sentinel.conf <<EOF
-      port 26379
-      sentinel monitor mymaster redis-master 6379 2
-      sentinel down-after-milliseconds mymaster 5000
-      sentinel failover-timeout mymaster 10000
-      sentinel parallel-syncs mymaster 1
-      EOF
-      redis-sentinel /tmp/sentinel.conf'
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "port 26379" > /tmp/sentinel.conf
+        echo "sentinel resolve-hostnames yes" >> /tmp/sentinel.conf
+        echo "sentinel monitor mymaster redis-master 6379 2" >> /tmp/sentinel.conf
+        echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf
+        echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf
+        echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf
+        redis-sentinel /tmp/sentinel.conf
     depends_on:
       redis-master:
         condition: service_healthy
