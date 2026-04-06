@@ -43,6 +43,9 @@ func (uc *RuleStrategyUsecase) List(ctx context.Context, status *model.RuleStrat
 }
 
 func (uc *RuleStrategyUsecase) Create(ctx context.Context, req *model.CreateRuleStrategyReq) (*model.RuleStrategy, error) {
+	if err := model.ValidateRuleNode(req.RuleNode); err != nil {
+		return nil, fmt.Errorf("strategy usecase create: %w", err)
+	}
 	obj := &model.RuleStrategy{
 		Name:        req.Name,
 		Description: req.Description,
@@ -57,6 +60,11 @@ func (uc *RuleStrategyUsecase) Create(ctx context.Context, req *model.CreateRule
 }
 
 func (uc *RuleStrategyUsecase) Update(ctx context.Context, id uint64, req *model.UpdateRuleStrategyReq) error {
+	if req.RuleNode != nil {
+		if err := model.ValidateRuleNode(*req.RuleNode); err != nil {
+			return fmt.Errorf("strategy usecase update: %w", err)
+		}
+	}
 	updates := make(map[string]any)
 	if req.Name != nil {
 		updates["name"] = *req.Name

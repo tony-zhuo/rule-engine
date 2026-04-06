@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/tony-zhuo/rule-engine/service/base/behavior/model"
+	rulemodel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 )
 
 var ErrDuplicateEvent = errors.New("duplicate event")
@@ -56,6 +57,15 @@ func (r *BehaviorRepo) Aggregate(ctx context.Context, cond *model.AggregateCond)
 
 	var result float64
 	agg := strings.ToUpper(cond.Aggregation)
+
+	// Defense-in-depth: validate aggregation and field path before interpolating into SQL.
+	if err := rulemodel.ValidateAggregation(agg); err != nil {
+		return 0, fmt.Errorf("aggregate: %w", err)
+	}
+	if err := rulemodel.ValidateFieldPath(cond.FieldPath); err != nil {
+		return 0, fmt.Errorf("aggregate: %w", err)
+	}
+
 	if agg == "COUNT" || cond.FieldPath == "" {
 		q = q.Select("COALESCE(COUNT(*), 0)")
 	} else {
