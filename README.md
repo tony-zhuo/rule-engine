@@ -4,69 +4,7 @@ A Go-based risk control system with AST rule evaluation and Complex Event Proces
 
 ## System Architecture
 
-```
-                                    ┌─────────────────────────────────────────────┐
-                                    │              Infrastructure                  │
-                                    │                                              │
-  ┌──────────┐    POST /v1/events   │  ┌─────────────────────────────────────┐    │
-  │  Client   │ ──────────────────► │  │            API Server               │    │
-  └──────────┘                      │  │  ┌──────────┐   ┌───────────────┐   │    │
-       │                            │  │  │Controller │──►│EngineUsecase  │   │    │
-       │       GET/POST /v1/rules   │  │  └──────────┘   └───────┬───────┘   │    │
-       └──────────────────────────► │  │                          │           │    │
-                                    │  │            Generate UUID + Produce   │    │
-                                    │  └──────────────────────────┼───────────┘    │
-                                    │                             │                │
-                                    │                             ▼                │
-                                    │               ┌─────────────────────┐        │
-                                    │               │   Kafka (events)    │        │
-                                    │               │   acks=-1           │        │
-                                    │               │   128 partitions    │        │
-                                    │               └──────────┬──────────┘        │
-                                    │                          │                   │
-                                    │                          ▼                   │
-                                    │  ┌─────────────────────────────────────┐     │
-                                    │  │            Worker                    │     │
-                                    │  │                                      │     │
-                                    │  │  1. Log behavior (idempotent)        │     │
-                                    │  │          │                           │     │
-                                    │  │          ▼                           │     │
-                                    │  │  2. Load active rules (cached)       │     │
-                                    │  │          │                           │     │
-                                    │  │          ▼                           │     │
-                                    │  │  3. Preload aggregation queries      │     │
-                                    │  │          │                           │     │
-                                    │  │          ▼                           │     │
-                                    │  │  4. Evaluate rules (AST)             │     │
-                                    │  │          │                           │     │
-                                    │  │          ▼                           │     │
-                                    │  │  5. CEP pattern matching             │     │
-                                    │  │          │                           │     │
-                                    │  │          ▼                           │     │
-                                    │  │  6. Produce results                  │     │
-                                    │  └──────┬───────────────────┬───────────┘     │
-                                    │         │                   │                 │
-                                    │         ▼                   ▼                 │
-                                    │  ┌─────────────┐   ┌───────────────┐         │
-                                    │  │  PostgreSQL  │   │Kafka (results)│         │
-                                    │  │             │   └───────────────┘         │
-                                    │  │ behavior_logs│          │                  │
-                                    │  │ rule_strategies         ▼                  │
-                                    │  │ cep_patterns │   ┌─────────────┐          │
-                                    │  └─────────────┘   │  Downstream  │          │
-                                    │                     │  (TBD)      │          │
-                                    │         ▲           └─────────────┘          │
-                                    │         │                                    │
-                                    │  ┌──────┴──────────────────────────┐         │
-                                    │  │  Redis Sentinel Cluster         │         │
-                                    │  │  Master + 2 Replica + 3 Sentinel│         │
-                                    │  │                                 │         │
-                                    │  │  - Rule cache (TTL 60s)         │         │
-                                    │  │  - CEP progress state           │         │
-                                    │  │  - AOF persistence              │         │
-                                    │  └─────────────────────────────────┘         │
-                                    └─────────────────────────────────────────────┘
-```
+![System Architecture](docs/architecture.png)
 
 ### Rule Engine vs CEP
 
