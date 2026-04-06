@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	goredis "github.com/redis/go-redis/v9"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	behaviorUsecase "github.com/tony-zhuo/rule-engine/service/base/behavior/usecase"
@@ -21,7 +22,6 @@ import (
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
 	pkgdb "github.com/tony-zhuo/rule-engine/pkg/db"
 	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
-	pkgredis "github.com/tony-zhuo/rule-engine/pkg/redis"
 )
 
 // setupIntegration initializes real DB, Redis, Kafka connections.
@@ -33,14 +33,15 @@ func setupIntegration(tb testing.TB) *EventUsecase {
 		Host: "localhost", User: "rule_engine", Password: "rule_engine",
 		DBName: "rule_engine", Port: 5432, SSLMode: "disable", TimeZone: "UTC",
 	})
-	pkgredis.Init(pkgredis.RedisConfig{MasterName: "mymaster", SentinelAddrs: "localhost:26379"})
 
 	db := pkgdb.GetDB()
-	rdb := pkgredis.GetClient()
-
 	if db == nil {
 		tb.Skip("DB not available, skipping integration benchmark")
 	}
+
+	// Connect directly to redis-master (exposed on host port 6379) for benchmarks.
+	// Sentinel is not needed here since we're testing processing performance, not failover.
+	rdb := goredis.NewClient(&goredis.Options{Addr: "localhost:6379"})
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
 		tb.Skip("Redis not available, skipping integration benchmark")
 	}
