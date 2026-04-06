@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,6 +158,78 @@ func BenchmarkExecute_Integration_HighAggregation(b *testing.B) {
 		if err := handler.Execute(msg); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// --- Throughput benchmarks (parallel execution) ---
+
+// BenchmarkThroughput_Unit measures how many events/sec the rule engine can process
+// with mocked I/O, scaling across CPU cores.
+//
+// Run: go test -bench=BenchmarkThroughput_Unit -benchtime=10s ./service/bff/worker/usecase/
+func BenchmarkThroughput_Unit(b *testing.B) {
+	handler := &EventUsecase{
+		behaviorUC:     &mockBehaviorUC{},
+		ruleStrategyUC: &mockRuleStrategyUC{rules: buildMockRules()},
+		cepProcessor:   &mockCEPProcessor{},
+		producer:       nil,
+		resultsTopic:   "test-results",
+	}
+
+	for _, workers := range []int{1, 4, 8, 16, 32} {
+		b.Run(fmt.Sprintf("workers-%d", workers), func(b *testing.B) {
+			b.SetParallelism(workers)
+			var counter atomic.Int64
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					id := counter.Add(1)
+					msg := buildMessage(
+						fmt.Sprintf("tp-unit-%d", id),
+						fmt.Sprintf("member-%d", id%100),
+						behaviorModel.BehaviorCryptoWithdraw,
+						map[string]any{"amount": 150000, "target_address": "0xTP"},
+					)
+					if err := handler.Execute(msg); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			throughput := float64(b.N) / b.Elapsed().Seconds()
+			b.ReportMetric(throughput, "events/s")
+		})
+	}
+}
+
+// BenchmarkThroughput_Integration measures real end-to-end throughput
+// with DB, Redis, and Kafka, scaling across concurrent workers.
+//
+// Run: go test -bench=BenchmarkThroughput_Integration -benchtime=10s ./service/bff/worker/usecase/
+func BenchmarkThroughput_Integration(b *testing.B) {
+	handler := setupIntegration(b)
+
+	for _, workers := range []int{1, 4, 8, 16, 32} {
+		b.Run(fmt.Sprintf("workers-%d", workers), func(b *testing.B) {
+			b.SetParallelism(workers)
+			var counter atomic.Int64
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					id := counter.Add(1)
+					msg := buildMessage(
+						fmt.Sprintf("tp-integ-%d-%d", time.Now().UnixNano(), id),
+						fmt.Sprintf("member-%d", id%100),
+						behaviorModel.BehaviorCryptoWithdraw,
+						map[string]any{"amount": 150000, "target_address": "0xTP"},
+					)
+					if err := handler.Execute(msg); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			throughput := float64(b.N) / b.Elapsed().Seconds()
+			b.ReportMetric(throughput, "events/s")
+		})
 	}
 }
 
