@@ -1,133 +1,129 @@
 # rule-engine
 
-A Go service for AST-based rule evaluation and Complex Event Processing (CEP) with stateful cross-event pattern matching.
+A Go-based risk control system with AST rule evaluation and Complex Event Processing (CEP) for real-time behavioral event analysis.
+
+## System Architecture
+
+```
+                                    ┌─────────────────────────────────────────────┐
+                                    │              Infrastructure                  │
+                                    │                                              │
+  ┌──────────┐    POST /v1/events   │  ┌─────────────────────────────────────┐    │
+  │  Client   │ ──────────────────► │  │            API Server               │    │
+  └──────────┘                      │  │  ┌──────────┐   ┌───────────────┐   │    │
+       │                            │  │  │Controller │──►│EngineUsecase  │   │    │
+       │       GET/POST /v1/rules   │  │  └──────────┘   └───────┬───────┘   │    │
+       └──────────────────────────► │  │                          │           │    │
+                                    │  │            Generate UUID + Produce   │    │
+                                    │  └──────────────────────────┼───────────┘    │
+                                    │                             │                │
+                                    │                             ▼                │
+                                    │               ┌─────────────────────┐        │
+                                    │               │   Kafka (events)    │        │
+                                    │               │   acks=-1           │        │
+                                    │               │   128 partitions    │        │
+                                    │               └──────────┬──────────┘        │
+                                    │                          │                   │
+                                    │                          ▼                   │
+                                    │  ┌─────────────────────────────────────┐     │
+                                    │  │            Worker                    │     │
+                                    │  │                                      │     │
+                                    │  │  1. Log behavior (idempotent)        │     │
+                                    │  │          │                           │     │
+                                    │  │          ▼                           │     │
+                                    │  │  2. Load active rules (cached)       │     │
+                                    │  │          │                           │     │
+                                    │  │          ▼                           │     │
+                                    │  │  3. Preload aggregation queries      │     │
+                                    │  │          │                           │     │
+                                    │  │          ▼                           │     │
+                                    │  │  4. Evaluate rules (AST)             │     │
+                                    │  │          │                           │     │
+                                    │  │          ▼                           │     │
+                                    │  │  5. CEP pattern matching             │     │
+                                    │  │          │                           │     │
+                                    │  │          ▼                           │     │
+                                    │  │  6. Produce results                  │     │
+                                    │  └──────┬───────────────────┬───────────┘     │
+                                    │         │                   │                 │
+                                    │         ▼                   ▼                 │
+                                    │  ┌─────────────┐   ┌───────────────┐         │
+                                    │  │  PostgreSQL  │   │Kafka (results)│         │
+                                    │  │             │   └───────────────┘         │
+                                    │  │ behavior_logs│          │                  │
+                                    │  │ rule_strategies         ▼                  │
+                                    │  │ cep_patterns │   ┌─────────────┐          │
+                                    │  └─────────────┘   │  Downstream  │          │
+                                    │                     │  (TBD)      │          │
+                                    │         ▲           └─────────────┘          │
+                                    │         │                                    │
+                                    │  ┌──────┴──────────────────────────┐         │
+                                    │  │  Redis Sentinel Cluster         │         │
+                                    │  │  Master + 2 Replica + 3 Sentinel│         │
+                                    │  │                                 │         │
+                                    │  │  - Rule cache (TTL 60s)         │         │
+                                    │  │  - CEP progress state           │         │
+                                    │  │  - AOF persistence              │         │
+                                    │  └─────────────────────────────────┘         │
+                                    └─────────────────────────────────────────────┘
+```
+
+### Rule Engine vs CEP
+
+| | Rule Strategy | CEP Pattern |
+|---|---|---|
+| Trigger | Single event + historical aggregation | Multiple events in sequence |
+| State | Stateless (queries DB) | Stateful (progress in Redis) |
+| Ordering | Not guaranteed | Strictly enforced |
+| Use case | Thresholds, frequency, cumulative amounts | Behavioral chains, flow anomaly detection |
+
+### Infrastructure
+
+| Component | Purpose | Config |
+|---|---|---|
+| PostgreSQL 17 | behavior_logs, rule_strategies, cep_patterns | Single instance |
+| Redis 7 Sentinel | Rule cache, CEP progress state | 1 master + 2 replicas + 3 sentinels, AOF |
+| Kafka (KRaft) | Event streaming between API and Worker | acks=-1, manual commit, sync delivery |
 
 ## Features
 
 - **AST rule evaluation** — arbitrary `AND`/`OR`/`NOT` trees where each leaf is a condition with field, operator, value, and optional time-window
 - **CEP pattern matching** — multi-step stateful sequences across events, with per-step `MaxWait` windows and cross-event variable binding
-- **Pluggable storage** — `MemoryStore` for tests, `RedisStore` for production
-- **HTTP API** — Gin-based REST endpoints via the engine BFF layer
-
-## Project Structure
-
-```
-rule-engine/
-├── cmd/
-│   └── server/main.go              # Entry point
-├── config/
-│   └── config.go                   # App, Redis, Log config structs
-├── pkg/
-│   ├── logs/                       # slog wrapper
-│   └── redis/                      # go-redis singleton
-├── service/
-│   ├── base/
-│   │   ├── rule/                   # AST rule evaluation domain
-│   │   │   ├── model/              # RuleNode, NodeType, EvalContext, MapContext
-│   │   │   ├── usecase/            # Evaluate() + RuleUsecase
-│   │   │   └── wire.go
-│   │   └── cep/                    # CEP stateful pattern matching domain
-│   │       ├── model/              # CEPPattern, Event, MatchResult, interfaces
-│   │       ├── repository/
-│   │       │   ├── memory/         # MemoryStore (for tests)
-│   │       │   └── redis/          # RedisStore (for production)
-│   │       ├── usecase/            # CEPUsecase (Processor)
-│   │       └── wire.go
-│   └── apis/
-│       └── engine/                 # BFF — orchestrates rule + cep domains
-│           ├── initialize/         # Conf struct
-│           ├── controller/         # Gin handlers
-│           ├── usecase/            # EngineUsecase
-│           ├── router/             # Route registration
-│           ├── wire/               # Wire DI (wire.go + wire_gen.go)
-│           ├── init.go
-│           └── router.go
-└── examples/
-    └── main.go                     # Demo: AST rule + deposit-then-withdraw CEP
-```
-
-## Data Flow
-
-```
-HTTP Request
-  → router/      (route registration)
-  → controller/  (bind request)
-  → BFF usecase/ (orchestrate)
-  → base rule/cep usecase/ (business logic)
-  → repository/  (state storage)
-  → Response
-```
+- **At-least-once delivery** — sync Kafka produce with `acks=-1`, manual consumer commit, idempotent writes via `event_id`
+- **Graceful shutdown** — signal handling, in-flight request drain, producer flush
+- **Redis Sentinel** — automatic failover with AOF persistence
 
 ## API Endpoints
 
-### POST /v1/engine/evaluate
-Evaluate a stateless AST rule against a field map.
+### POST /v1/events
+Submit a behavioral event for async processing.
 
 ```json
 {
-  "rule": {
-    "type": "AND",
-    "children": [
-      { "type": "CONDITION", "field": "amount", "operator": ">", "value": 1000000 },
-      { "type": "CONDITION", "field": "count_3d", "operator": ">", "value": 5 }
-    ]
-  },
-  "fields": {
-    "amount": 2000000,
-    "count_3d": 8
-  }
-}
-```
-
-Response: `{ "matched": true }`
-
-### POST /v1/engine/events
-Process a behavioral event through all registered CEP patterns.
-
-```json
-{
+  "event_id": "evt-001",
   "member_id": "member-42",
   "behavior": "CryptoWithdraw",
-  "fields": { "target_address": "0xABCD..." },
+  "fields": { "amount": 150000, "target_address": "0xABCD..." },
   "occurred_at": "2024-01-01T00:00:00Z"
 }
 ```
 
-Response: `{ "matches": [...] }`
+Response: `202 Accepted` — event is produced to Kafka for async processing.
 
-## Quick Start
+### GET /v1/rules
+List rule strategies. Optional query: `?status=1` (active) or `?status=2` (inactive).
 
-```go
-import (
-    ruleModel    "github.com/tony-zhuo/rule-engine/service/base/rule/model"
-    ruleUsecase  "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
-    cepModel     "github.com/tony-zhuo/rule-engine/service/base/cep/model"
-    cepRedis     "github.com/tony-zhuo/rule-engine/service/base/cep/repository/redis"
-    cepUsecase   "github.com/tony-zhuo/rule-engine/service/base/cep/usecase"
-    engineUsecase "github.com/tony-zhuo/rule-engine/service/apis/engine/usecase"
-)
+### POST /v1/rules
+Create a rule strategy.
 
-// Wire up dependencies
-store   := cepRedis.NewRedisStore(redisClient)
-ruleUC  := ruleUsecase.NewRuleUsecase()
-cepUC   := cepUsecase.NewCEPUsecase(store, ruleUC)
-eng     := engineUsecase.NewEngineUsecase(ruleUC, cepUC)
+### GET /v1/rules/:id
+Get a rule strategy by ID.
 
-// Stateless AST rule
-rule := ruleModel.RuleNode{
-    Type: ruleModel.NodeAnd,
-    Children: []ruleModel.RuleNode{
-        {Type: ruleModel.NodeCondition, Field: "amount", Operator: ">", Value: float64(1_000_000)},
-        {Type: ruleModel.NodeCondition, Field: "count_3d", Operator: ">", Value: float64(5)},
-    },
-}
-ctx := ruleModel.NewMapContext(map[string]any{"amount": float64(2_000_000), "count_3d": float64(8)})
-matched, err := eng.EvaluateRule(rule, ctx)
+### PUT /v1/rules/:id
+Update a rule strategy.
 
-// CEP: load pattern then process events
-eng.LoadPattern(cepModel.CEPPattern{ /* see examples/main.go */ })
-results, err := eng.ProcessEvent(context.Background(), &event)
-```
+### PATCH /v1/rules/:id/status
+Enable or disable a rule strategy.
 
 ## Supported Operators
 
@@ -157,20 +153,60 @@ State conditions can reference variables captured by earlier states using `$vari
 
 Variables are extracted per state via `ContextBinding` (`variable_name` → `"$event.field_path"`).
 
-## Running the Example
+## Quick Start
 
 ```bash
-go run ./examples/main.go
+# Start infrastructure
+make docker-up
+
+# Run API server (local)
+make run-api
+
+# Run worker (local)
+make run-worker
+
+# Run migrations manually (if needed)
+make migrate
 ```
 
-## Starting the Server
+## Makefile Commands
+
+| Command | Description |
+|---|---|
+| `make build` | Build API and worker binaries |
+| `make run-api` | Run API server locally |
+| `make run-worker` | Run worker locally |
+| `make migrate` | Run SQL migrations |
+| `make migrate-down` | Drop all tables |
+| `make docker-up` | Start docker compose |
+| `make docker-down` | Stop docker compose |
+| `make docker-reset` | Destroy volumes and rebuild |
+| `make kafka-topics` | List Kafka topics |
+| `make kafka-consume` | Consume messages from events topic |
+| `make kafka-lag` | Show consumer group lag |
+| `make kafka-describe` | Describe events topic partitions |
+
+## Benchmark
 
 ```bash
-go run ./cmd/server/main.go
-# Listens on :8080
+# Unit (no infra needed)
+go test -bench=BenchmarkExecute_Unit -benchtime=10s ./service/bff/worker/usecase/
+
+# Integration (requires docker compose up)
+go test -bench=BenchmarkExecute_Integration -benchtime=10s ./service/bff/worker/usecase/
 ```
+
+### Results (Apple M2 Pro)
+
+| Benchmark | Avg Latency |
+|---|---|
+| Unit (6 rules, mocked I/O) | ~9 us |
+| Unit (300 rules, mocked I/O) | ~194 us |
+| Integration (6 rules, real DB/Redis/Kafka) | ~9 ms |
+| Integration (high aggregation) | ~9.6 ms |
 
 ## TODO
 
-- [ ] 驗證每個場景的交易行為
 - [ ] 每秒 10,000 event 時的效能
+- [ ] Kafka partition 數量調整（benchmark 建議 128）
+- [ ] Production: `replication.factor=3`, `min.insync.replicas=2`
