@@ -102,13 +102,13 @@ import (
     ruleModel    "github.com/tony-zhuo/rule-engine/service/base/rule/model"
     ruleUsecase  "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
     cepModel     "github.com/tony-zhuo/rule-engine/service/base/cep/model"
-    cepMemory    "github.com/tony-zhuo/rule-engine/service/base/cep/repository/memory"
+    cepRedis     "github.com/tony-zhuo/rule-engine/service/base/cep/repository/redis"
     cepUsecase   "github.com/tony-zhuo/rule-engine/service/base/cep/usecase"
     engineUsecase "github.com/tony-zhuo/rule-engine/service/apis/engine/usecase"
 )
 
 // Wire up dependencies
-store   := cepMemory.NewMemoryStore()
+store   := cepRedis.NewRedisStore(redisClient)
 ruleUC  := ruleUsecase.NewRuleUsecase()
 cepUC   := cepUsecase.NewCEPUsecase(store, ruleUC)
 eng     := engineUsecase.NewEngineUsecase(ruleUC, cepUC)
