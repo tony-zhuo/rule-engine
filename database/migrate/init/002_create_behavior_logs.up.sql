@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS behavior_logs (
     id          BIGSERIAL       PRIMARY KEY,
-    event_id    VARCHAR(36)     NOT NULL,
+    event_id    VARCHAR(64)     NOT NULL,
     member_id   VARCHAR(128)    NOT NULL,
     behavior    VARCHAR(64)     NOT NULL,
     fields      JSONB           NOT NULL,

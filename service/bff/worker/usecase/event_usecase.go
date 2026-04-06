@@ -3,13 +3,16 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
+	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	cepModel "github.com/tony-zhuo/rule-engine/service/base/cep/model"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
@@ -81,6 +84,10 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		Fields:     event.Fields,
 		OccurredAt: event.OccurredAt,
 	}); err != nil {
+		if errors.Is(err, behaviorDB.ErrDuplicateEvent) {
+			slog.Debug("worker: skip duplicate event", "event_id", event.EventID)
+			return nil
+		}
 		return fmt.Errorf("log behavior: %w", err)
 	}
 
