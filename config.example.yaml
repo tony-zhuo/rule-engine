@@ -12,6 +12,9 @@ db:
   port: 5432
   sslmode: "disable"
   timezone: "UTC"
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime_sec: 300
 
 redis:
   master_name: "mymaster"
