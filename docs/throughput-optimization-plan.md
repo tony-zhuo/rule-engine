@@ -83,6 +83,20 @@ postgres:
 
 **預期效果**: 4+ workers 不再 crash，throughput 穩定在 ~2000 events/s
 
+### Phase 1 實測結果（Apple M2 Pro, benchtime=10s）
+
+| Workers | Baseline | Phase 1 | 改善 |
+|---------|----------|---------|------|
+| 1 | 587 events/s | 914 events/s | +56% |
+| 4 | crash | 1865 events/s | 不再 crash |
+| 8 | crash | 1732 events/s | 不再 crash |
+| 16 | crash | 1596 events/s | 不再 crash，少量 SLOW SQL |
+| 32 | crash | 1542 events/s | 不再 crash，SLOW SQL 增多 |
+
+- 單 worker 提升來自 PreparedStmt + shared_buffers 調大
+- 4 workers 為吞吐量甜蜜點，超過後因 25 條 DB 連線被多 goroutine 搶而下降
+- Workers 16+ 出現 SLOW SQL（>200ms），瓶頸在 aggregation query 的 DB round-trip 次數 → Phase 2 解決
+
 ---
 
 ## Phase 2: Batch Aggregation SQL（合併 query）
