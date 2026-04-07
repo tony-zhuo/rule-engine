@@ -55,7 +55,7 @@ Event Worker 要高吞吐（目標 10K+ events/s），Notification Worker 的 HT
 在 `DBConfig` 加入 pool 參數，`Init()` 裡 `gorm.Open` 後設定：
 ```go
 sqlDB, _ := db.DB()
-sqlDB.SetMaxOpenConns(20)
+sqlDB.SetMaxOpenConns(25)
 sqlDB.SetMaxIdleConns(10)
 sqlDB.SetConnMaxLifetime(5 * time.Minute)
 ```
