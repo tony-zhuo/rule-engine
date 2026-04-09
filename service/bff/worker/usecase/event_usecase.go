@@ -119,7 +119,7 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		return fmt.Errorf("list active rules: %w", err)
 	}
 
-	// 4. Preload aggregate conditions.
+	// 4. Batch aggregate — collect all unique keys, build conditions, single DB round-trip.
 	var allKeys []ruleModel.AggregateKey
 	seen := make(map[string]struct{})
 	for _, rule := range rules {
@@ -132,15 +132,15 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		}
 	}
 
-	cache := make(map[string]any, len(allKeys))
 	now := time.Now()
-	for _, k := range allKeys {
-		cond := buildAggregateCond(event.MemberID, k, now)
-		result, err := h.behaviorUC.Aggregate(ctx, cond)
-		if err != nil {
-			continue
-		}
-		cache[k.CacheKey()] = result
+	conds := buildAggregateConds(event.MemberID, allKeys, now)
+	aggResults, err := h.behaviorUC.BatchAggregate(ctx, event.MemberID, conds)
+	if err != nil {
+		return fmt.Errorf("batch aggregate: %w", err)
+	}
+	cache := make(map[string]any, len(aggResults))
+	for k, v := range aggResults {
+		cache[k] = v
 	}
 
 	// 5. Evaluate rules.
@@ -233,5 +233,14 @@ func buildAggregateCond(memberID string, k ruleModel.AggregateKey, now time.Time
 		Aggregation: strings.ToUpper(parts[1]),
 		FieldPath:   fieldPath,
 		Since:       since,
+		Key:         k.CacheKey(),
 	}
+}
+
+func buildAggregateConds(memberID string, keys []ruleModel.AggregateKey, now time.Time) []behaviorModel.AggregateCond {
+	conds := make([]behaviorModel.AggregateCond, 0, len(keys))
+	for _, k := range keys {
+		conds = append(conds, *buildAggregateCond(memberID, k, now))
+	}
+	return conds
 }

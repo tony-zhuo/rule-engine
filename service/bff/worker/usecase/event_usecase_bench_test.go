@@ -266,6 +266,14 @@ func (m *mockBehaviorUC) Aggregate(_ context.Context, _ *behaviorModel.Aggregate
 	return 5, nil
 }
 
+func (m *mockBehaviorUC) BatchAggregate(_ context.Context, _ string, conds []behaviorModel.AggregateCond) (map[string]float64, error) {
+	result := make(map[string]float64, len(conds))
+	for _, c := range conds {
+		result[c.Key] = 5
+	}
+	return result, nil
+}
+
 type mockRuleStrategyUC struct {
 	rules []*ruleModel.RuleStrategy
 }

@@ -16,4 +16,5 @@ type AggregateCond struct {
 	Aggregation string    // COUNT, SUM, AVG, MAX, MIN
 	FieldPath   string    // JSON path e.g. "amount"; empty for COUNT
 	Since       time.Time // occurred_at >= Since
+	Key         string    // cache key from AggregateKey.CacheKey(), set by caller
 }

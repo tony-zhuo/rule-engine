@@ -55,3 +55,7 @@ func (uc *BehaviorUsecase) Log(ctx context.Context, req *model.LogBehaviorReq) (
 func (uc *BehaviorUsecase) Aggregate(ctx context.Context, cond *model.AggregateCond) (float64, error) {
 	return uc.repo.Aggregate(ctx, cond)
 }
+
+func (uc *BehaviorUsecase) BatchAggregate(ctx context.Context, memberID string, conds []model.AggregateCond) (map[string]float64, error) {
+	return uc.repo.BatchAggregate(ctx, memberID, conds)
+}

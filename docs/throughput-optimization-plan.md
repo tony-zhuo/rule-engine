@@ -175,6 +175,24 @@ cache, err := h.behaviorUC.BatchAggregate(ctx, event.MemberID, conds)
 
 **預期效果**: 5 次 DB round-trip → 1 次。單 event 延遲從 ~1.7ms 降到 ~0.5ms。同時大幅降低 DB 連線佔用和 cache miss
 
+### Bug Fix + Phase 2 實測結果（Apple M2 Pro, benchtime=10s）
+
+此次 benchmark 同時包含 Bug Fix（processed_events 去重）和 Phase 2（Batch Aggregation SQL）的改動。
+
+| Workers | Phase 1       | Bug Fix + Phase 2 | 變化  |
+| ------- | ------------- | ------------------ | ----- |
+| 1       | 914 events/s  | 723 events/s       | -21%  |
+| 4       | 1865 events/s | 1138 events/s      | -39%  |
+| 8       | 1732 events/s | 1142 events/s      | -34%  |
+| 16      | 1596 events/s | 1032 events/s      | -35%  |
+| 32      | 1542 events/s | 1070 events/s      | -31%  |
+
+**吞吐量下降原因**：Bug Fix 的 `processed_events` 每次 event 新增了 3 次 DB round-trip（UPSERT + SELECT read-back + UPDATE），抵消了 Batch SQL 從 5 次 aggregation query 合併成 1 次省下的 4 次 round-trip。淨效果是每次 event 的 DB round-trip 反而比 Phase 1 多了。
+
+SLOW SQL log 顯示瓶頸在 `processed_event.go:58` 的 SELECT read-back（UPSERT 後讀回完整 row 以取得 status 和 attempts）。
+
+**待優化**：`Upsert` 改用 PostgreSQL `INSERT ... ON CONFLICT ... RETURNING *` 省掉 SELECT read-back，減少 1 次 DB round-trip。
+
 ---
 
 ## Phase 3: Per-Partition Goroutine + 多 Process

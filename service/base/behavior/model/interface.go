@@ -10,11 +10,15 @@ type BehaviorRepoInterface interface {
 	// field is the JSON field path to aggregate (empty string for COUNT).
 	// Returns float64 result.
 	Aggregate(ctx context.Context, cond *AggregateCond) (float64, error)
+	// BatchAggregate merges multiple aggregation conditions into a single SQL
+	// using PostgreSQL FILTER clauses. Returns a map keyed by AggregateCond.CacheKey().
+	BatchAggregate(ctx context.Context, memberID string, conds []AggregateCond) (map[string]float64, error)
 }
 
 type BehaviorUsecaseInterface interface {
 	Log(ctx context.Context, req *LogBehaviorReq) (*BehaviorLog, error)
 	Aggregate(ctx context.Context, cond *AggregateCond) (float64, error)
+	BatchAggregate(ctx context.Context, memberID string, conds []AggregateCond) (map[string]float64, error)
 }
 
 // ProcessedEventRepoInterface tracks fully-processed events for dedup on retry.
