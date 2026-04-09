@@ -31,6 +31,11 @@ func NewBehaviorRepo(db *gorm.DB) *BehaviorRepo {
 	return _behaviorRepoObj
 }
 
+// NewBehaviorRepoWith creates a non-singleton instance (for testing with alternative DB connections).
+func NewBehaviorRepoWith(db *gorm.DB) *BehaviorRepo {
+	return &BehaviorRepo{db: db}
+}
+
 func (r *BehaviorRepo) Create(ctx context.Context, obj *model.BehaviorLog) error {
 	result := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{

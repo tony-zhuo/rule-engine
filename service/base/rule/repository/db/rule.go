@@ -29,6 +29,11 @@ func NewRuleStrategyRepo(db *gorm.DB) *RuleStrategyRepo {
 	return _ruleRepoObj
 }
 
+// NewRuleStrategyRepoWith creates a non-singleton instance (for testing with alternative DB connections).
+func NewRuleStrategyRepoWith(db *gorm.DB) *RuleStrategyRepo {
+	return &RuleStrategyRepo{db: db}
+}
+
 func marshalRuleNode(obj *model.RuleStrategy) error {
 	b, err := json.Marshal(obj.RuleNode)
 	if err != nil {

@@ -34,6 +34,11 @@ func NewCEPUsecase(store model.ProgressStore, ruleUC ruleModel.RuleUsecaseInterf
 	return _cepUsecaseObj
 }
 
+// NewCEPUsecaseWith creates a non-singleton instance (for testing with alternative connections).
+func NewCEPUsecaseWith(store model.ProgressStore, ruleUC ruleModel.RuleUsecaseInterface) *CEPUsecase {
+	return &CEPUsecase{store: store, ruleUC: ruleUC}
+}
+
 // AddPattern registers a pattern for evaluation.
 func (p *CEPUsecase) AddPattern(pattern model.CEPPattern) {
 	p.patterns = append(p.patterns, pattern)

@@ -294,6 +294,28 @@ CTE 額外好處：已完成/已失敗的 event 不會執行 behavior_log INSERT
 
 目前每條 event 4 次 DB round-trip（CTE 寫入 + BatchAggregate + UPDATE + Kafka produce），已接近單連線處理的極限。進一步提升需靠 Phase 3 並行處理。
 
+### PgBouncer 實測（Apple M2 Pro, benchtime=10s）
+
+嘗試在 app 和 PostgreSQL 之間加 PgBouncer（transaction mode），將 app 側 MaxOpenConns 從 25 提高到 100，PgBouncer 維持 25 條實際連線到 PostgreSQL。
+
+注意：PgBouncer transaction mode 下必須關閉 GORM `PrepareStmt`（prepared statement 綁定 server connection，PgBouncer 在 transaction 結束後會重新分配連線）。
+
+| Workers | 直連 PostgreSQL (MaxOpen=25, PrepareStmt=true) | PgBouncer (MaxOpen=100, PrepareStmt=false) | 變化 |
+| ------- | ----------------------------------------------- | ------------------------------------------ | ---- |
+| 1       | 745 events/s                                    | 718 events/s                               | -4%  |
+| 4       | 1149 events/s                                   | 1032 events/s                              | -10% |
+| 8       | 1115 events/s                                   | 1041 events/s                              | -7%  |
+| 16      | 1073 events/s                                   | 1012 events/s                              | -6%  |
+| 32      | 1071 events/s                                   | 992 events/s                               | -7%  |
+
+**PgBouncer 在 localhost 環境反而更慢**，原因：
+
+1. **代理 overhead**：每個 query 多一次 TCP 轉發（app → PgBouncer → PostgreSQL），在 localhost 下延遲本來就趨近零，多一跳反而增加開銷
+2. **失去 PrepareStmt**：PgBouncer transaction mode 不支援 prepared statement，每條 SQL 都要重新 parse/plan，抵消了連線池的收益
+3. **localhost 無連線爭搶瓶頸**：直連時連線取得幾乎零成本，PgBouncer 的連線複用優勢無法體現
+
+**結論**：PgBouncer 的優勢在 production 環境（app 與 DB 分機器、有真實網路延遲）才會顯現。localhost benchmark 下不適用，暫不納入優化路徑。
+
 ---
 
 ## Phase 3: Per-Partition Goroutine + 多 Process

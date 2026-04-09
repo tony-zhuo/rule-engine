@@ -28,6 +28,11 @@ func NewBehaviorUsecase(repo model.BehaviorRepoInterface) *BehaviorUsecase {
 	return _behaviorUCObj
 }
 
+// NewBehaviorUsecaseWith creates a non-singleton instance (for testing with alternative DB connections).
+func NewBehaviorUsecaseWith(repo model.BehaviorRepoInterface) *BehaviorUsecase {
+	return &BehaviorUsecase{repo: repo}
+}
+
 func (uc *BehaviorUsecase) Log(ctx context.Context, req *model.LogBehaviorReq) (*model.BehaviorLog, error) {
 	fieldsJSON, err := json.Marshal(req.Fields)
 	if err != nil {

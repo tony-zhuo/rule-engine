@@ -29,6 +29,11 @@ func NewProcessedEventRepo(db *gorm.DB) *ProcessedEventRepo {
 	return _processedEventRepoObj
 }
 
+// NewProcessedEventRepoWith creates a non-singleton instance (for testing with alternative DB connections).
+func NewProcessedEventRepoWith(db *gorm.DB) *ProcessedEventRepo {
+	return &ProcessedEventRepo{db: db}
+}
+
 func (r *ProcessedEventRepo) Upsert(ctx context.Context, eventID string) (*model.ProcessedEvent, error) {
 	now := time.Now()
 

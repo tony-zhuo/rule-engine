@@ -34,6 +34,11 @@ func NewRuleStrategyUsecase(repo model.RuleStrategyRepoInterface, ruleUC *RuleUs
 	return _ruleStrategyUCObj
 }
 
+// NewRuleStrategyUsecaseWith creates a non-singleton instance (for testing with alternative connections).
+func NewRuleStrategyUsecaseWith(repo model.RuleStrategyRepoInterface, ruleUC *RuleUsecase, rdb *redis.Client) *RuleStrategyUsecase {
+	return &RuleStrategyUsecase{repo: repo, ruleUC: ruleUC, rdb: rdb}
+}
+
 func (uc *RuleStrategyUsecase) Get(ctx context.Context, id uint64) (*model.RuleStrategy, error) {
 	return uc.repo.Get(ctx, id)
 }

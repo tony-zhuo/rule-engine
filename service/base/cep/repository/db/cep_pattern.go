@@ -29,6 +29,11 @@ func NewCEPPatternRepo(db *gorm.DB) *CEPPatternRepo {
 	return _cepPatternRepoObj
 }
 
+// NewCEPPatternRepoWith creates a non-singleton instance (for testing with alternative DB connections).
+func NewCEPPatternRepoWith(db *gorm.DB) *CEPPatternRepo {
+	return &CEPPatternRepo{db: db}
+}
+
 func (r *CEPPatternRepo) ListActive(ctx context.Context) ([]model.CEPPattern, error) {
 	var records []model.CEPPatternRecord
 	if err := r.db.WithContext(ctx).
