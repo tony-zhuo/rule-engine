@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 )
@@ -32,33 +31,20 @@ func NewProcessedEventRepo(db *gorm.DB) *ProcessedEventRepo {
 
 func (r *ProcessedEventRepo) Upsert(ctx context.Context, eventID string) (*model.ProcessedEvent, error) {
 	now := time.Now()
-	record := &model.ProcessedEvent{
-		EventID:   eventID,
-		Attempts:  1,
-		Status:    model.ProcessedEventStatusPending,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
 
-	result := r.db.WithContext(ctx).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "event_id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"attempts":   gorm.Expr("processed_events.attempts + 1"),
-				"updated_at": now,
-			}),
-		}).
-		Create(record)
-	if result.Error != nil {
-		return nil, fmt.Errorf("processed event upsert: %w", result.Error)
+	var record model.ProcessedEvent
+	err := r.db.WithContext(ctx).Raw(`
+		INSERT INTO processed_events (event_id, attempts, status, created_at, updated_at)
+		VALUES (?, 1, ?, ?, ?)
+		ON CONFLICT (event_id) DO UPDATE SET
+			attempts = processed_events.attempts + 1,
+			updated_at = ?
+		RETURNING event_id, attempts, status, created_at, updated_at
+	`, eventID, model.ProcessedEventStatusPending, now, now, now).Scan(&record).Error
+	if err != nil {
+		return nil, fmt.Errorf("processed event upsert: %w", err)
 	}
-
-	// Read back current state (UPSERT returning clause not portable in GORM).
-	var current model.ProcessedEvent
-	if err := r.db.WithContext(ctx).Where("event_id = ?", eventID).First(&current).Error; err != nil {
-		return nil, fmt.Errorf("processed event upsert read back: %w", err)
-	}
-	return &current, nil
+	return &record, nil
 }
 
 func (r *ProcessedEventRepo) MarkCompleted(ctx context.Context, eventID string) error {

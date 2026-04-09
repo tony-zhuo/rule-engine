@@ -191,7 +191,19 @@ cache, err := h.behaviorUC.BatchAggregate(ctx, event.MemberID, conds)
 
 SLOW SQL log 顯示瓶頸在 `processed_event.go:58` 的 SELECT read-back（UPSERT 後讀回完整 row 以取得 status 和 attempts）。
 
-**待優化**：`Upsert` 改用 PostgreSQL `INSERT ... ON CONFLICT ... RETURNING *` 省掉 SELECT read-back，減少 1 次 DB round-trip。
+**追加優化**：`Upsert` 改用 PostgreSQL `INSERT ... ON CONFLICT ... RETURNING *` 省掉 SELECT read-back，減少 1 次 DB round-trip。實測結果：
+
+| Workers | UPSERT + SELECT | RETURNING | 變化        |
+| ------- | --------------- | --------- | ----------- |
+| 1       | 723 events/s    | 790 events/s  | +9%     |
+| 4       | 1138 events/s   | 1103 events/s | 誤差範圍 |
+| 8       | 1142 events/s   | 1073 events/s | 誤差範圍 |
+| 16      | 1032 events/s   | 1093 events/s | 誤差範圍 |
+| 32      | 1070 events/s   | 971 events/s  | 誤差範圍 |
+
+省掉 SELECT read-back 的效果不顯著，瓶頸不在那次 SELECT，而是 `processed_events` 整體多出的 2 次寫入 round-trip（UPSERT + UPDATE）。這部分是 Bug Fix 正確性保證的必要成本，無法再省。
+
+**結論**：Bug Fix + Phase 2 的淨效果是吞吐量從 Phase 1 下降約 20-35%。Batch SQL 的優化被 processed_events 的額外 round-trip 抵消。真正的吞吐量提升需要靠 Phase 3（Per-Partition Goroutine 並行處理）來實現。
 
 ---
 
