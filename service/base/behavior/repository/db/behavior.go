@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,8 +12,6 @@ import (
 	"github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 	rulemodel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 )
-
-var ErrDuplicateEvent = errors.New("duplicate event")
 
 var (
 	_behaviorRepoOnce sync.Once
@@ -43,9 +40,6 @@ func (r *BehaviorRepo) Create(ctx context.Context, obj *model.BehaviorLog) error
 		Create(obj)
 	if result.Error != nil {
 		return fmt.Errorf("behavior repo create: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return ErrDuplicateEvent
 	}
 	return nil
 }

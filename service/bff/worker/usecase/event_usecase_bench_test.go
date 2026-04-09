@@ -53,6 +53,7 @@ func setupIntegration(tb testing.TB) *EventUsecase {
 	}
 
 	behaviorRepo := behaviorDB.NewBehaviorRepo(db)
+	processedEventRepo := behaviorDB.NewProcessedEventRepo(db)
 	behaviorUC := behaviorUsecase.NewBehaviorUsecase(behaviorRepo)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
@@ -71,7 +72,7 @@ func setupIntegration(tb testing.TB) *EventUsecase {
 		cepUC.AddPattern(p)
 	}
 
-	return NewEventUsecase(behaviorUC, ruleStrategyUC, cepUC, producer, "rule-engine-results")
+	return NewEventUsecase(behaviorUC, processedEventRepo, ruleStrategyUC, cepUC, producer, "rule-engine-results")
 }
 
 func buildMessage(eventID, memberID string, behavior behaviorModel.BehaviorType, fields map[string]any) *kafka.Message {
@@ -169,11 +170,12 @@ func BenchmarkExecute_Integration_HighAggregation(b *testing.B) {
 // Run: go test -bench=BenchmarkThroughput_Unit -benchtime=10s ./service/bff/worker/usecase/
 func BenchmarkThroughput_Unit(b *testing.B) {
 	handler := &EventUsecase{
-		behaviorUC:     &mockBehaviorUC{},
-		ruleStrategyUC: &mockRuleStrategyUC{rules: buildMockRules()},
-		cepProcessor:   &mockCEPProcessor{},
-		producer:       nil,
-		resultsTopic:   "test-results",
+		behaviorUC:         &mockBehaviorUC{},
+		processedEventRepo: &mockProcessedEventRepo{},
+		ruleStrategyUC:     &mockRuleStrategyUC{rules: buildMockRules()},
+		cepProcessor:       &mockCEPProcessor{},
+		producer:           nil,
+		resultsTopic:       "test-results",
 	}
 
 	for _, workers := range []int{1, 4, 8, 16, 32} {
@@ -241,6 +243,18 @@ func (m *mockCEPProcessor) AddPattern(_ cepModel.CEPPattern) {}
 func (m *mockCEPProcessor) ProcessEvent(_ context.Context, _ *cepModel.Event) ([]*cepModel.MatchResult, error) {
 	return nil, nil
 }
+
+type mockProcessedEventRepo struct{}
+
+func (m *mockProcessedEventRepo) Upsert(_ context.Context, eventID string) (*behaviorModel.ProcessedEvent, error) {
+	return &behaviorModel.ProcessedEvent{
+		EventID:  eventID,
+		Attempts: 1,
+		Status:   behaviorModel.ProcessedEventStatusPending,
+	}, nil
+}
+func (m *mockProcessedEventRepo) MarkCompleted(_ context.Context, _ string) error { return nil }
+func (m *mockProcessedEventRepo) MarkFailed(_ context.Context, _ string) error    { return nil }
 
 type mockBehaviorUC struct{}
 
@@ -350,11 +364,12 @@ func buildMockRules() []*ruleModel.RuleStrategy {
 // Run: go test -bench=BenchmarkExecute_Unit -benchtime=10s -count=3 ./service/bff/worker/usecase/
 func BenchmarkExecute_Unit(b *testing.B) {
 	handler := &EventUsecase{
-		behaviorUC:     &mockBehaviorUC{},
-		ruleStrategyUC: &mockRuleStrategyUC{rules: buildMockRules()},
-		cepProcessor:   &mockCEPProcessor{},
-		producer:       nil,
-		resultsTopic:   "test-results",
+		behaviorUC:         &mockBehaviorUC{},
+		processedEventRepo: &mockProcessedEventRepo{},
+		ruleStrategyUC:     &mockRuleStrategyUC{rules: buildMockRules()},
+		cepProcessor:       &mockCEPProcessor{},
+		producer:           nil,
+		resultsTopic:       "test-results",
 	}
 
 	b.ResetTimer()
@@ -383,9 +398,10 @@ func BenchmarkExecute_Unit_ManyRules(b *testing.B) {
 	}
 
 	handler := &EventUsecase{
-		behaviorUC:     &mockBehaviorUC{},
-		ruleStrategyUC: &mockRuleStrategyUC{rules: manyRules},
-		cepProcessor:   &mockCEPProcessor{},
+		behaviorUC:         &mockBehaviorUC{},
+		processedEventRepo: &mockProcessedEventRepo{},
+		ruleStrategyUC:     &mockRuleStrategyUC{rules: manyRules},
+		cepProcessor:       &mockCEPProcessor{},
 		producer:       nil,
 		resultsTopic:   "test-results",
 	}

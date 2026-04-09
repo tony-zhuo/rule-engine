@@ -3,7 +3,6 @@ package usecase
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
-	behaviorDB "github.com/tony-zhuo/rule-engine/service/base/behavior/repository/db"
 	cepModel "github.com/tony-zhuo/rule-engine/service/base/cep/model"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
@@ -44,27 +42,32 @@ type MatchedPattern struct {
 	Variables map[string]any `json:"variables,omitempty"`
 }
 
+const maxRetries = 3
+
 type EventUsecase struct {
-	behaviorUC     behaviorModel.BehaviorUsecaseInterface
-	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface
-	cepProcessor   cepModel.ProcessorInterface
-	producer       *kafka.Producer
-	resultsTopic   string
+	behaviorUC       behaviorModel.BehaviorUsecaseInterface
+	processedEventRepo behaviorModel.ProcessedEventRepoInterface
+	ruleStrategyUC   ruleModel.RuleStrategyUsecaseInterface
+	cepProcessor     cepModel.ProcessorInterface
+	producer         *kafka.Producer
+	resultsTopic     string
 }
 
 func NewEventUsecase(
 	behaviorUC behaviorModel.BehaviorUsecaseInterface,
+	processedEventRepo behaviorModel.ProcessedEventRepoInterface,
 	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface,
 	cepProcessor cepModel.ProcessorInterface,
 	producer *kafka.Producer,
 	resultsTopic string,
 ) *EventUsecase {
 	return &EventUsecase{
-		behaviorUC:     behaviorUC,
-		ruleStrategyUC: ruleStrategyUC,
-		cepProcessor:   cepProcessor,
-		producer:       producer,
-		resultsTopic:   resultsTopic,
+		behaviorUC:         behaviorUC,
+		processedEventRepo: processedEventRepo,
+		ruleStrategyUC:     ruleStrategyUC,
+		cepProcessor:       cepProcessor,
+		producer:           producer,
+		resultsTopic:       resultsTopic,
 	}
 }
 
@@ -76,7 +79,30 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		return fmt.Errorf("unmarshal event: %w", err)
 	}
 
-	// 1. Log behavior (idempotent via event_id unique constraint).
+	// 1. Dedup via processed_events: check if already completed or exceeded max retries.
+	pe, err := h.processedEventRepo.Upsert(ctx, event.EventID)
+	if err != nil {
+		return fmt.Errorf("upsert processed event: %w", err)
+	}
+	switch pe.Status {
+	case behaviorModel.ProcessedEventStatusCompleted:
+		slog.Debug("worker: skip completed event", "event_id", event.EventID)
+		return nil
+	case behaviorModel.ProcessedEventStatusFailed:
+		slog.Debug("worker: skip failed event", "event_id", event.EventID)
+		return nil
+	default:
+		if pe.Attempts > maxRetries {
+			slog.Error("worker: event exceeded max retries",
+				"event_id", event.EventID, "attempts", pe.Attempts)
+			if err := h.processedEventRepo.MarkFailed(ctx, event.EventID); err != nil {
+				slog.Error("worker: mark failed", "event_id", event.EventID, "error", err)
+			}
+			return nil
+		}
+	}
+
+	// 2. Log behavior (idempotent: ON CONFLICT DO NOTHING).
 	if _, err := h.behaviorUC.Log(ctx, &behaviorModel.LogBehaviorReq{
 		EventID:    event.EventID,
 		MemberID:   event.MemberID,
@@ -84,20 +110,16 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		Fields:     event.Fields,
 		OccurredAt: event.OccurredAt,
 	}); err != nil {
-		if errors.Is(err, behaviorDB.ErrDuplicateEvent) {
-			slog.Debug("worker: skip duplicate event", "event_id", event.EventID)
-			return nil
-		}
 		return fmt.Errorf("log behavior: %w", err)
 	}
 
-	// 2. List active rules (from Redis cache).
+	// 3. List active rules (from Redis cache).
 	rules, err := h.ruleStrategyUC.ListActive(ctx)
 	if err != nil {
 		return fmt.Errorf("list active rules: %w", err)
 	}
 
-	// 3. Preload aggregate conditions.
+	// 4. Preload aggregate conditions.
 	var allKeys []ruleModel.AggregateKey
 	seen := make(map[string]struct{})
 	for _, rule := range rules {
@@ -121,7 +143,7 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		cache[k.CacheKey()] = result
 	}
 
-	// 4. Evaluate rules.
+	// 5. Evaluate rules.
 	fields := make(map[string]any, len(event.Fields)+2)
 	for k, v := range event.Fields {
 		fields[k] = v
@@ -139,9 +161,10 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		matched = append(matched, MatchedRule{ID: rule.ID, Name: rule.Name})
 	}
 
-	// 5. CEP pattern matching.
+	// 6. CEP pattern matching (idempotent via event_id dedup in progress).
 	var matchedPatterns []MatchedPattern
 	cepEvent := &cepModel.Event{
+		EventID:    event.EventID,
 		MemberID:   event.MemberID,
 		Behavior:   string(event.Behavior),
 		Fields:     event.Fields,
@@ -159,23 +182,26 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		})
 	}
 
-	if len(matched) == 0 && len(matchedPatterns) == 0 {
-		return nil
+	// 7. Produce match results (only if something matched).
+	if len(matched) > 0 || len(matchedPatterns) > 0 {
+		result := MatchResult{
+			MemberID:        event.MemberID,
+			MatchedRules:    matched,
+			MatchedPatterns: matchedPatterns,
+			ProcessedAt:     time.Now(),
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal result: %w", err)
+		}
+		if err := pkgkafka.Produce(h.producer, h.resultsTopic, event.MemberID, data); err != nil {
+			return fmt.Errorf("produce result: %w", err)
+		}
 	}
 
-	// 6. Produce match results.
-	result := MatchResult{
-		MemberID:        event.MemberID,
-		MatchedRules:    matched,
-		MatchedPatterns: matchedPatterns,
-		ProcessedAt:     time.Now(),
-	}
-	data, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("marshal result: %w", err)
-	}
-	if err := pkgkafka.Produce(h.producer, h.resultsTopic, event.MemberID, data); err != nil {
-		return fmt.Errorf("produce result: %w", err)
+	// 8. Mark event as completed.
+	if err := h.processedEventRepo.MarkCompleted(ctx, event.EventID); err != nil {
+		return fmt.Errorf("mark completed: %w", err)
 	}
 	return nil
 }

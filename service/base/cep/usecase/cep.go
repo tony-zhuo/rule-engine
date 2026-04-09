@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -83,13 +84,14 @@ func (p *CEPUsecase) ProcessEvent(ctx context.Context, event *model.Event) ([]*m
 		vars := extractBindings(event, pattern.States[0].ContextBinding)
 		now := time.Now()
 		progress := &model.PatternProgress{
-			ID:          uuid.NewString(),
-			PatternID:   pattern.ID,
-			MemberID:    event.MemberID,
-			CurrentStep: 1, // already matched step 0
-			Variables:   vars,
-			StartedAt:   now,
-			ExpiresAt:   patternExpiry(pattern, now),
+			ID:              uuid.NewString(),
+			PatternID:       pattern.ID,
+			MemberID:        event.MemberID,
+			CurrentStep:     1, // already matched step 0
+			Variables:       vars,
+			StartedAt:       now,
+			ExpiresAt:       patternExpiry(pattern, now),
+			ProcessedEvents: []string{event.EventID},
 		}
 
 		// A single-state pattern is an instant match.
@@ -116,6 +118,11 @@ func (p *CEPUsecase) ProcessEvent(ctx context.Context, event *model.Event) ([]*m
 // Returns a MatchResult if this event completes the pattern; returns nil otherwise.
 func (p *CEPUsecase) advanceProgress(ctx context.Context, event *model.Event, pattern model.CEPPattern, progress *model.PatternProgress) (*model.MatchResult, error) {
 	if progress.CurrentStep >= len(pattern.States) {
+		return nil, nil
+	}
+
+	// Idempotency: skip if this event was already processed by this progress instance.
+	if slices.Contains(progress.ProcessedEvents, event.EventID) {
 		return nil, nil
 	}
 
@@ -147,6 +154,7 @@ func (p *CEPUsecase) advanceProgress(ctx context.Context, event *model.Event, pa
 		progress.Variables[k] = v
 	}
 	progress.CurrentStep++
+	progress.ProcessedEvents = append(progress.ProcessedEvents, event.EventID)
 
 	if progress.CurrentStep >= len(pattern.States) {
 		// Pattern fully matched.

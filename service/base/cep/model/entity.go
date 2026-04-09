@@ -20,16 +20,18 @@ type PatternState struct {
 }
 
 type PatternProgress struct {
-	ID          string         `json:"id"`
-	PatternID   string         `json:"pattern_id"`
-	MemberID    string         `json:"member_id"`
-	CurrentStep int            `json:"current_step"`
-	Variables   map[string]any `json:"variables"`
-	StartedAt   time.Time      `json:"started_at"`
-	ExpiresAt   time.Time      `json:"expires_at"`
+	ID              string         `json:"id"`
+	PatternID       string         `json:"pattern_id"`
+	MemberID        string         `json:"member_id"`
+	CurrentStep     int            `json:"current_step"`
+	Variables       map[string]any `json:"variables"`
+	StartedAt       time.Time      `json:"started_at"`
+	ExpiresAt       time.Time      `json:"expires_at"`
+	ProcessedEvents []string       `json:"processed_events,omitempty"`
 }
 
 type Event struct {
+	EventID    string         `json:"event_id"`
 	MemberID   string         `json:"member_id"`
 	Behavior   string         `json:"behavior"`
 	Fields     map[string]any `json:"fields"`

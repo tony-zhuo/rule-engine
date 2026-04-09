@@ -75,6 +75,7 @@ func workerInit(ctx context.Context) {
 	rdb := pkgredis.GetClient()
 
 	behaviorRepo := behaviorDB.NewBehaviorRepo(db)
+	processedEventRepo := behaviorDB.NewProcessedEventRepo(db)
 	behaviorUC := behaviorUsecase.NewBehaviorUsecase(behaviorRepo)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
@@ -94,7 +95,7 @@ func workerInit(ctx context.Context) {
 	}
 	slog.Info("CEP patterns loaded", "count", len(patterns))
 
-	handler := workerUsecase.NewEventUsecase(behaviorUC, ruleStrategyUC, cepUC, producer, cfg.Kafka.Topics.Results)
+	handler := workerUsecase.NewEventUsecase(behaviorUC, processedEventRepo, ruleStrategyUC, cepUC, producer, cfg.Kafka.Topics.Results)
 
 	Register(NewEventManager(ctx, cfg, handler, producer))
 }
