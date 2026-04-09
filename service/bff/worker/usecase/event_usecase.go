@@ -79,10 +79,24 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		return fmt.Errorf("unmarshal event: %w", err)
 	}
 
-	// 1. Dedup via processed_events: check if already completed or exceeded max retries.
-	pe, err := h.processedEventRepo.Upsert(ctx, event.EventID)
+	// 1+2. Dedup + log behavior in single DB round-trip (CTE).
+	fieldsJSON, err := json.Marshal(event.Fields)
 	if err != nil {
-		return fmt.Errorf("upsert processed event: %w", err)
+		return fmt.Errorf("marshal fields: %w", err)
+	}
+	occurredAt := event.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now()
+	}
+	pe, err := h.processedEventRepo.UpsertWithBehaviorLog(ctx, event.EventID, &behaviorModel.BehaviorLog{
+		EventID:    event.EventID,
+		MemberID:   event.MemberID,
+		Behavior:   event.Behavior,
+		Fields:     string(fieldsJSON),
+		OccurredAt: occurredAt,
+	})
+	if err != nil {
+		return fmt.Errorf("upsert with behavior log: %w", err)
 	}
 	switch pe.Status {
 	case behaviorModel.ProcessedEventStatusCompleted:
@@ -100,17 +114,6 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 			}
 			return nil
 		}
-	}
-
-	// 2. Log behavior (idempotent: ON CONFLICT DO NOTHING).
-	if _, err := h.behaviorUC.Log(ctx, &behaviorModel.LogBehaviorReq{
-		EventID:    event.EventID,
-		MemberID:   event.MemberID,
-		Behavior:   event.Behavior,
-		Fields:     event.Fields,
-		OccurredAt: event.OccurredAt,
-	}); err != nil {
-		return fmt.Errorf("log behavior: %w", err)
 	}
 
 	// 3. List active rules (from Redis cache).

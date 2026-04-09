@@ -26,6 +26,10 @@ type ProcessedEventRepoInterface interface {
 	// Upsert inserts a new pending record or increments attempts if it already exists.
 	// Returns the current ProcessedEvent state.
 	Upsert(ctx context.Context, eventID string) (*ProcessedEvent, error)
+	// UpsertWithBehaviorLog combines UPSERT processed_events + INSERT behavior_log
+	// into a single DB round-trip using a CTE. The behavior_log INSERT only executes
+	// when the event status is pending.
+	UpsertWithBehaviorLog(ctx context.Context, eventID string, log *BehaviorLog) (*ProcessedEvent, error)
 	// MarkCompleted sets status to completed.
 	MarkCompleted(ctx context.Context, eventID string) error
 	// MarkFailed sets status to failed.

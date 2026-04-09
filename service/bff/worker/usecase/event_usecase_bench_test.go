@@ -253,6 +253,13 @@ func (m *mockProcessedEventRepo) Upsert(_ context.Context, eventID string) (*beh
 		Status:   behaviorModel.ProcessedEventStatusPending,
 	}, nil
 }
+func (m *mockProcessedEventRepo) UpsertWithBehaviorLog(_ context.Context, eventID string, _ *behaviorModel.BehaviorLog) (*behaviorModel.ProcessedEvent, error) {
+	return &behaviorModel.ProcessedEvent{
+		EventID:  eventID,
+		Attempts: 1,
+		Status:   behaviorModel.ProcessedEventStatusPending,
+	}, nil
+}
 func (m *mockProcessedEventRepo) MarkCompleted(_ context.Context, _ string) error { return nil }
 func (m *mockProcessedEventRepo) MarkFailed(_ context.Context, _ string) error    { return nil }
 

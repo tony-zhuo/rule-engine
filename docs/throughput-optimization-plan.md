@@ -203,7 +203,96 @@ SLOW SQL log 顯示瓶頸在 `processed_event.go:58` 的 SELECT read-back（UPSE
 
 省掉 SELECT read-back 的效果不顯著，瓶頸不在那次 SELECT，而是 `processed_events` 整體多出的 2 次寫入 round-trip（UPSERT + UPDATE）。這部分是 Bug Fix 正確性保證的必要成本，無法再省。
 
-**結論**：Bug Fix + Phase 2 的淨效果是吞吐量從 Phase 1 下降約 20-35%。Batch SQL 的優化被 processed_events 的額外 round-trip 抵消。真正的吞吐量提升需要靠 Phase 3（Per-Partition Goroutine 並行處理）來實現。
+### EXPLAIN ANALYZE：Batch SQL vs 分開 5 條 query
+
+測試對象：`member-1`（4679 筆 behavior_logs）
+
+**分開 5 條 query（每條完整走 `(member_id, behavior, occurred_at)` 三欄 index）：**
+
+| Query | Index 使用 | DB 執行時間 |
+|-------|-----------|------------|
+| Trade COUNT (3 days) | Index Scan ✅ 三欄全中 | 0.09ms |
+| CryptoWithdraw COUNT (24h) | Index Scan ✅ 三欄全中 | 2.13ms |
+| CryptoWithdraw SUM amount (7d) | Index Scan ✅ 三欄全中 | 9.35ms |
+| FiatDeposit COUNT (1h) | Index Scan ✅ 三欄全中 | 0.03ms |
+| FiatDeposit MAX amount (1h) | Index Scan ✅ 三欄全中 | 0.02ms |
+| **合計（DB 端）** | | **11.6ms** |
+| **+ 5 次 round-trip（~1ms/次）** | | **~16.6ms** |
+
+**Batch 1 條 query（FILTER 語法，只用到 `member_id` 前綴）：**
+
+| Query | Index 使用 | DB 執行時間 |
+|-------|-----------|------------|
+| Batch FILTER | Bitmap Index Scan ⚠️ 只中 `member_id`，撈出 4679 筆後 heap filter | **29ms** |
+| **+ 1 次 round-trip** | | **~30ms** |
+
+**EXPLAIN ANALYZE 結論**：單看 DB 執行時間，分開的 query（11.6ms）比 Batch（29ms）快一倍，因為每條都精準走三欄 index。Batch query 只用到 `member_id` 前綴，必須掃該 member 全部 row 再做 FILTER。
+
+### 實際 Benchmark：分開 query vs Batch SQL
+
+但 EXPLAIN ANALYZE 只測 DB 端執行時間，不含連線取得開銷。在高併發下，分開 5 條 query 要從 connection pool（MaxOpenConns=25）取 5 次連線，連線爭搶成為瓶頸。
+
+| Workers | Phase 1       | Batch SQL     | 分開 5 條 query |
+| ------- | ------------- | ------------- | --------------- |
+| 1       | 914 events/s  | 790 events/s  | 636 events/s    |
+| 4       | 1865 events/s | 1103 events/s | 712 events/s    |
+| 8       | 1732 events/s | 1073 events/s | 744 events/s    |
+| 16      | 1596 events/s | 1093 events/s | 882 events/s    |
+| 32      | 1542 events/s | 971 events/s  | 701 events/s    |
+
+分開 query 比 Batch 更慢 20-35%。原因：每次 `Aggregate` 都要從 pool 取連線 → 發 query → 等回應 → 歸還，5 次 round-trip 放大了連線爭搶。Batch 雖然 DB 端慢，但只佔 1 條連線 1 次。
+
+**決定**：維持 Batch SQL。在 connection pool 有限的情況下，減少 round-trip 次數比優化單條 query 的 index 利用率更重要。
+
+### CTE 合併 round-trip：UPSERT processed_events + INSERT behavior_log
+
+原本每條 event 有 4 次 DB round-trip：
+
+```
+1. UPSERT processed_events  (寫)
+2. INSERT behavior_log       (寫)
+3. BatchAggregate            (讀)
+4. UPDATE processed_events   (寫)
+```
+
+用 PostgreSQL CTE 把步驟 1+2 合成一條 SQL，減少到 3 次：
+
+```sql
+WITH pe AS (
+    INSERT INTO processed_events ... ON CONFLICT ... RETURNING *
+),
+bl AS (
+    INSERT INTO behavior_logs ...
+    WHERE EXISTS (SELECT 1 FROM pe WHERE status = 'pending')
+    ON CONFLICT (event_id) DO NOTHING
+    RETURNING id
+)
+SELECT * FROM pe;
+```
+
+CTE 額外好處：已完成/已失敗的 event 不會執行 behavior_log INSERT（WHERE EXISTS 過濾），對 completed/failed 的 event 也省了一次無謂的寫入。
+
+| Workers | 4 round-trips | CTE 3 round-trips | 變化   |
+| ------- | ------------- | ------------------ | ------ |
+| 1       | 790 events/s  | 745 events/s       | -6%    |
+| 4       | 1103 events/s | 1149 events/s      | +4%    |
+| 8       | 1073 events/s | 1115 events/s      | +4%    |
+| 16      | 1093 events/s | 1073 events/s      | -2%    |
+| 32      | 971 events/s  | 1071 events/s      | **+10%** |
+
+高併發（workers 32）改善最明顯（+10%），因為少 1 次 round-trip = 少 1 次連線爭搶。低併發無顯著差異。
+
+### Phase 2 總結
+
+| 優化項目 | DB round-trips | 效果 |
+|---------|---------------|------|
+| Baseline (Phase 1) | 7 次（1 INSERT + 5 Aggregate + 1 Produce） | 914 events/s (1 worker) |
+| + Bug Fix (processed_events) | +3 次 = 10 次 | 吞吐量下降（正確性成本） |
+| + Batch SQL (5→1 Aggregate) | -4 次 = 6 次 | 部分抵消 Bug Fix 的開銷 |
+| + RETURNING (省 SELECT) | -1 次 = 5 次 | 效果不顯著 |
+| + CTE 合併 (2→1 寫入) | -1 次 = 4 次 | 高併發 +10% |
+
+目前每條 event 4 次 DB round-trip（CTE 寫入 + BatchAggregate + UPDATE + Kafka produce），已接近單連線處理的極限。進一步提升需靠 Phase 3 並行處理。
 
 ---
 
