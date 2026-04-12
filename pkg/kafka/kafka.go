@@ -30,10 +30,12 @@ func NewProducer(cfg KafkaConfig) (*kafka.Producer, error) {
 
 func NewConsumer(cfg KafkaConfig) (*kafka.Consumer, error) {
 	c, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers":  cfg.Brokers,
-		"group.id":           cfg.ConsumerGroup,
-		"auto.offset.reset":  "earliest",
-		"enable.auto.commit": false,
+		"bootstrap.servers":        cfg.Brokers,
+		"group.id":                 cfg.ConsumerGroup,
+		"auto.offset.reset":        "earliest",
+		"enable.auto.commit":       true,
+		"auto.commit.interval.ms":  5000,
+		"enable.auto.offset.store": false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)

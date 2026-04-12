@@ -404,6 +404,28 @@ default:
 "enable.auto.offset.store": false,  // 手動 StoreMessage
 ```
 
+**為什麼 `auto.commit` 要改回 `true`**
+
+`offset.store` 和 `auto.commit` 是兩個不同層級的概念，Phase 3 把它們拆開各司其職：
+
+- `offset.store`：把 offset 標記為「已處理完、可以 commit」，只寫到本地記憶體
+- `auto.commit`：把已 store 的 offset 真正送到 broker，做 consumer group 協調
+
+Phase 3 的流程：
+
+1. partition goroutine 處理完 event 後把 msg 丟進 `commitCh`
+2. Poll goroutine 單執行緒呼叫 `StoreMessage(msg)` → 只是標記該 offset 可 commit
+3. librdkafka 按 partition 追蹤「最小未 store 的 offset」，同一 partition 內 msg 3 沒完成時，msg 4 就算 store 了也不會被 commit → 保證 at-least-once
+4. 真正送到 broker 的動作交給 librdkafka 背景執行緒每 5 秒做一次（`auto.commit.interval.ms=5000`）
+
+為什麼不沿用 Phase 1/2 的手動 `CommitMessage`：
+
+- `confluent-kafka-go` 的 `CommitMessage` 是同步 RPC，每條 event commit 一次會變成新的瓶頸
+- `CommitMessage` 不是 thread-safe，多個 partition goroutine 同時呼叫會出問題
+- 改成「worker 只 Store、librdkafka 背景 batch commit」後，commit 成本從 per-event 變成每 5 秒一次，吞吐量才能吃滿
+
+結論：`auto.commit=true` 負責「批次送出」，`offset.store=false` 讓我們保有「什麼時候算完成」的控制權，兩者合起來才是安全又高吞吐的組合。
+
 **部署**:
 
 ```bash
