@@ -116,17 +116,17 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		}
 	}
 
-	// 3. List active rules (from Redis cache).
-	rules, err := h.ruleStrategyUC.ListActive(ctx)
+	// 3. List active compiled rules (from Redis cache, compiled on load).
+	compiled, err := h.ruleStrategyUC.ListActiveCompiled(ctx)
 	if err != nil {
-		return fmt.Errorf("list active rules: %w", err)
+		return fmt.Errorf("list active compiled rules: %w", err)
 	}
 
-	// 4. Batch aggregate — collect all unique keys, build conditions, single DB round-trip.
+	// 4. Batch aggregate — collect all unique keys from compiled strategies, single DB round-trip.
 	var allKeys []ruleModel.AggregateKey
 	seen := make(map[string]struct{})
-	for _, rule := range rules {
-		for _, k := range ruleModel.CollectAggregateKeys(rule.RuleNode) {
+	for _, cs := range compiled {
+		for _, k := range cs.AggregateKeys {
 			ck := k.CacheKey()
 			if _, ok := seen[ck]; !ok {
 				seen[ck] = struct{}{}
@@ -146,7 +146,7 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 		cache[k] = v
 	}
 
-	// 5. Evaluate rules.
+	// 5. Evaluate compiled rules — no AST walking, direct closure execution.
 	fields := make(map[string]any, len(event.Fields)+2)
 	for k, v := range event.Fields {
 		fields[k] = v
@@ -155,13 +155,13 @@ func (h *EventUsecase) Execute(msg *kafka.Message) error {
 	fields["member_id"] = event.MemberID
 
 	var matched []MatchedRule
-	for _, rule := range rules {
+	for _, cs := range compiled {
 		evalCtx := ruleUsecase.NewPreloadedEvalContext(fields, cache)
-		ok, err := h.ruleStrategyUC.Evaluate(rule.RuleNode, evalCtx)
+		ok, err := cs.Eval(evalCtx)
 		if err != nil || !ok {
 			continue
 		}
-		matched = append(matched, MatchedRule{ID: rule.ID, Name: rule.Name})
+		matched = append(matched, MatchedRule{ID: cs.ID, Name: cs.Name})
 	}
 
 	// 6. CEP pattern matching (idempotent via event_id dedup in progress).

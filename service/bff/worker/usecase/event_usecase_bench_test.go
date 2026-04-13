@@ -303,6 +303,22 @@ func (m *mockRuleStrategyUC) SetStatus(_ context.Context, _ uint64, _ ruleModel.
 func (m *mockRuleStrategyUC) ListActive(_ context.Context) ([]*ruleModel.RuleStrategy, error) {
 	return m.rules, nil
 }
+func (m *mockRuleStrategyUC) ListActiveCompiled(_ context.Context) ([]ruleModel.CompiledStrategy, error) {
+	compiled := make([]ruleModel.CompiledStrategy, 0, len(m.rules))
+	for _, rule := range m.rules {
+		eval, err := ruleUsecase.Compile(rule.RuleNode)
+		if err != nil {
+			return nil, err
+		}
+		compiled = append(compiled, ruleModel.CompiledStrategy{
+			ID:            rule.ID,
+			Name:          rule.Name,
+			Eval:          eval,
+			AggregateKeys: ruleModel.CollectAggregateKeys(rule.RuleNode),
+		})
+	}
+	return compiled, nil
+}
 func (m *mockRuleStrategyUC) Evaluate(node ruleModel.RuleNode, ctx ruleModel.EvalContext) (bool, error) {
 	return ruleUsecase.Evaluate(node, ctx)
 }

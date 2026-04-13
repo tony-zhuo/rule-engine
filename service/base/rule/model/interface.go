@@ -29,5 +29,6 @@ type RuleStrategyUsecaseInterface interface {
 	Update(ctx context.Context, id uint64, req *UpdateRuleStrategyReq) error
 	SetStatus(ctx context.Context, id uint64, status RuleStrategyStatus) error
 	ListActive(ctx context.Context) ([]*RuleStrategy, error)
+	ListActiveCompiled(ctx context.Context) ([]CompiledStrategy, error)
 	Evaluate(node RuleNode, ctx EvalContext) (bool, error)
 }

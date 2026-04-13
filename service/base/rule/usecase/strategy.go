@@ -126,6 +126,28 @@ func (uc *RuleStrategyUsecase) ListActive(ctx context.Context) ([]*model.RuleStr
 	return rules, nil
 }
 
+func (uc *RuleStrategyUsecase) ListActiveCompiled(ctx context.Context) ([]model.CompiledStrategy, error) {
+	rules, err := uc.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	compiled := make([]model.CompiledStrategy, 0, len(rules))
+	for _, rule := range rules {
+		eval, err := Compile(rule.RuleNode)
+		if err != nil {
+			return nil, fmt.Errorf("compile rule %d (%s): %w", rule.ID, rule.Name, err)
+		}
+		compiled = append(compiled, model.CompiledStrategy{
+			ID:            rule.ID,
+			Name:          rule.Name,
+			Eval:          eval,
+			AggregateKeys: model.CollectAggregateKeys(rule.RuleNode),
+		})
+	}
+	return compiled, nil
+}
+
 func (uc *RuleStrategyUsecase) invalidateCache(ctx context.Context) {
 	uc.rdb.Del(ctx, activeRulesCacheKey)
 }

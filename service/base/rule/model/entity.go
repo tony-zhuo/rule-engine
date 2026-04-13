@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// CompiledRule is a pre-compiled evaluator produced from a RuleNode AST.
+// It captures the tree structure in closures so evaluation avoids recursive
+// tree walking, repeated operator parsing, and per-call type detection.
+type CompiledRule func(ctx EvalContext) (bool, error)
+
 type RuleNode struct {
 	Type     NodeType    `json:"type"`
 	Children []RuleNode  `json:"children,omitempty"`
@@ -39,6 +44,15 @@ type RuleStrategy struct {
 }
 
 func (RuleStrategy) TableName() string { return "rule_strategies" }
+
+// CompiledStrategy wraps a RuleStrategy with its pre-compiled evaluator and
+// pre-extracted aggregate keys, eliminating per-event AST walking and key collection.
+type CompiledStrategy struct {
+	ID            uint64
+	Name          string
+	Eval          CompiledRule
+	AggregateKeys []AggregateKey
+}
 
 // AggregateKey represents a unique aggregation query needed during rule evaluation.
 type AggregateKey struct {
