@@ -440,11 +440,218 @@ docker compose up --scale worker=4
 
 ---
 
-## Phase 4: 非同步 Kafka Produce + Result Notification Worker
+## Phase 4: Rule Strategy Compilation（消除 GC 壓力）
+
+### 問題：遞迴 tree walk 的 heap escape
+
+目前 `Evaluate(node RuleNode, ctx EvalContext)` 每個 event 都遞迴走一遍 RuleNode tree，造成大量 heap escape：
+
+1. **RuleNode struct 逃逸** — `Evaluate` 接收 `model.RuleNode`（含 `[]RuleNode` children slice、`any` Value、`*TimeWindow` pointer），遞迴呼叫時 Go compiler 無法證明這些值不逃逸，全部分配到 heap
+2. **`any` interface boxing** — `resolveValue` 和 `resolveRHS` 回傳 `any`，每次比較都要 box/unbox，產生 heap allocation
+3. **`fmt.Sprintf("%v", actual)`** — string comparison path 每次呼叫都 allocate 新 string
+4. **`strings.ToUpper(node.Operator)`** — 每次 eval 都 allocate 新 string
+5. **`fmt.Errorf(...)`** — 每個 error wrap 都是 heap allocation
+6. **ListActive Redis GET** — 每個 event 都反序列化 `[]*RuleStrategy`，產生大量短命 object
+
+在高吞吐量場景（10K+ QPS），每個 event 評估多條 rule，每條 rule 有多個 node，**每秒產生數萬個短命 heap object**，GC 頻繁觸發 stop-the-world。
+
+### 解法：compile-time 一次性分配，eval-time 零分配
+
+將 `RuleNode` tree 在 application 啟動時編譯為 function closure：
+- Closure 本身只在 compile time 分配一次，長生命週期住在 heap 上，不會被 GC 回收
+- Eval time 直接呼叫 closure，**不傳遞 RuleNode struct、不做 type switch、不做 string 操作**
+- 附帶好處：hot path 不再需要 Redis GET / DB query 取 rule 定義
+
+### Architecture
+
+```
+Startup:
+  DB → []*RuleStrategy → Compile(RuleNode) → []CompiledRule → atomic.Pointer
+  (one-time heap allocation, lives until next Reload)
+
+Hot path (per event):
+  atomic.Pointer.Load() → []CompiledRule    ← no alloc, pointer read
+  ├─ pre-extracted AggregateKeys iteration  ← no alloc, slice read
+  ├─ BatchAggregate (DB, unavoidable)
+  └─ cr.EvalFn(evalCtx)                    ← closure call, no tree walk
+      ├─ LHS: map lookup (fields/cache)    ← no alloc
+      ├─ RHS: pre-coerced literal          ← no alloc (captured in closure)
+      └─ compare: function pointer call    ← no alloc
+
+Rule CRUD (API process):
+  Create/Update/SetStatus → invalidateCache()
+  └─ Redis Publish("rule_engine:rule_reload")
+  └─ Worker subscriber → Reload() → re-compile → atomic swap
+```
+
+### 實作細節
+
+#### 4.1: 新增 CompiledRule model
+
+**新檔案**: `service/base/rule/model/compiled.go`
+
+```go
+type CompiledRule struct {
+    ID            uint64
+    Name          string
+    EvalFn        func(EvalContext) (bool, error)  // compiled closure
+    AggregateKeys []AggregateKey                    // pre-extracted at compile time
+}
+```
+
+**修改**: `service/base/rule/model/interface.go` — 新增：
+
+```go
+type RuleRegistryInterface interface {
+    GetCompiledRules() []CompiledRule
+}
+```
+
+#### 4.2: Compile function — 消除 eval-time allocation
+
+**新檔案**: `service/base/rule/usecase/compiler.go`
+
+`Compile(node RuleNode) (func(EvalContext) (bool, error), error)` — 遞迴只在 compile time 發生（啟動時），不在 hot path。
+
+**compileAnd/compileOr/compileNot**：compile time 建立 `[]func(EvalContext)(bool,error)` slice（一次性 heap alloc），回傳的 closure capture 這個 slice，eval time 只做 range + call。
+
+**compileCondition** — 核心，以下全部在 compile time 完成：
+
+| 目前 eval-time 的操作 | 改為 compile-time 預計算 | 避免的 alloc |
+|---|---|---|
+| `strings.Contains(field, ":")` | bool flag captured in closure | string scan |
+| `strings.ToUpper(node.Operator)` | pre-uppercased string | string alloc |
+| `switch op { case ">": ... }` | function pointer `func(float64,float64)bool` | switch overhead |
+| `toFloat64(expected)` for literal | pre-coerced `float64` captured | `any` unboxing |
+| `fmt.Sprintf("%v", actual)` | 只在確定是 string path 時才做 | 減少不必要 alloc |
+| `AggregateKey{}.CacheKey()` | pre-computed string | string concat |
+| `strings.HasPrefix(field, "$")` | bool flag | string check |
+| `[]any` for IN list | pre-built `map[string]struct{}` | O(n)→O(1) + 避免 Sprintf |
+
+**Zero-alloc eval path 設計**：
+
+```go
+func compileCondition(node RuleNode) (func(EvalContext) (bool, error), error) {
+    // compile time: 預計算所有能預計算的東西
+    // 1. field 分類（simple / aggregation / $variable）
+    // 2. operator → function pointer
+    // 3. RHS literal coercion
+    // 4. aggregation cache key
+
+    // 回傳的 closure 只做：
+    //   a. map lookup 取 LHS value（fields[key] 或 cache[key]）
+    //   b. toFloat64(lhs) — 只有 LHS 需要 runtime coerce（type switch, no alloc）
+    //   c. 呼叫 pre-resolved comparator function pointer
+    return func(ctx EvalContext) (bool, error) {
+        lhs := fields[fieldKey]           // map lookup, no alloc
+        lhsF, ok := toFloat64(lhs)        // type switch, no alloc
+        return cmpFn(lhsF, rhsFloat), nil // function pointer call, no alloc
+    }, nil
+}
+```
+
+#### 4.3: RuleRegistry — lock-free read
+
+**同檔案**: `service/base/rule/usecase/compiler.go`
+
+```go
+type RuleRegistry struct {
+    rules     atomic.Pointer[[]CompiledRule]  // lock-free read on hot path
+    repo      RuleStrategyRepoInterface
+    rdb       *redis.Client
+}
+```
+
+- `NewRuleRegistry(ctx, repo, rdb)` — startup 時 load + compile，fail-fast（DB 不通就不啟動）
+- `GetCompiledRules() []CompiledRule` — `*r.rules.Load()`，single atomic pointer read
+- `Reload(ctx)` — load from DB → compile each → build new slice → atomic swap
+  - 舊 slice 由 GC 自然回收（等所有 in-flight goroutine 釋放 reference 後）
+- `startSubscriber(ctx)` — Redis Pub/Sub on `rule_engine:rule_reload`
+  - 收到訊息 → `Reload(ctx)`
+  - 5 分鐘 periodic fallback（防 pub/sub message 遺失）
+
+#### 4.4: API side signaling
+
+**修改**: `service/base/rule/usecase/strategy.go`
+
+`invalidateCache` 加入 `rdb.Publish(ctx, ruleReloadChannel, "reload")`。
+保留現有 `rdb.Del`（API process 自己的 ListActive 可能還在用）。
+
+#### 4.5: Wire into worker
+
+**修改**: `service/bff/worker/init.go`
+
+```go
+ruleRegistry, err := ruleUsecase.NewRuleRegistry(ctx, ruleRepo, rdb)
+if err != nil {
+    log.Fatal("failed to initialize rule registry: ", err)
+}
+slog.Info("Rule registry loaded", "count", len(ruleRegistry.GetCompiledRules()))
+```
+
+Pass `ruleRegistry` to `NewEventUsecase`。
+
+#### 4.6: Hot path changes
+
+**修改**: `service/bff/worker/usecase/event_usecase.go`
+
+- `EventUsecase` 加 `ruleRegistry ruleModel.RuleRegistryInterface`
+- 移除 `ruleStrategyUC`（hot path 不再使用）
+- `Execute()` 改為：
+
+```go
+compiled := h.ruleRegistry.GetCompiledRules()  // atomic read, no I/O
+
+// Pre-computed aggregate keys — 只是 slice iteration，不走 tree
+for _, cr := range compiled {
+    for _, k := range cr.AggregateKeys { ... }
+}
+
+// Evaluate — direct closure call，不走遞迴 tree walk
+for _, cr := range compiled {
+    evalCtx := ruleUsecase.NewPreloadedEvalContext(fields, cache)
+    ok, err := cr.EvalFn(evalCtx)  // zero-alloc closure call
+}
+```
+
+### Per-event allocation: Before vs After
+
+| Before (per event, per rule) | After |
+|---|---|
+| `RuleNode` struct + children slices 逃逸到 heap | 零：closure 在 compile time 已分配 |
+| `any` boxing for resolveValue/resolveRHS | 零：LHS 只做 `toFloat64` type switch |
+| `strings.ToUpper(op)` — string alloc | 零：compile time 已完成 |
+| `fmt.Sprintf("%v", actual/expected)` — string alloc | 僅在 string path 且無法避免時 |
+| `AggregateKey.CacheKey()` — string concat | 零：compile time 已計算 |
+| Redis GET / JSON unmarshal | 零：atomic pointer load |
+| CollectAggregateKeys tree walk | 零：pre-computed slice |
+
+### 要改的檔案
+
+| 檔案 | 改什麼 |
+|------|--------|
+| `service/base/rule/model/compiled.go` | 新增：CompiledRule struct |
+| `service/base/rule/model/interface.go` | 新增：RuleRegistryInterface |
+| `service/base/rule/usecase/compiler.go` | 新增：Compile function + RuleRegistry |
+| `service/base/rule/usecase/compiler_test.go` | 新增：unit test + benchmark |
+| `service/base/rule/usecase/strategy.go` | 修改：invalidateCache 加 Publish |
+| `service/bff/worker/init.go` | 修改：建立 RuleRegistry，傳給 EventUsecase |
+| `service/bff/worker/usecase/event_usecase.go` | 修改：用 compiled rules 取代 ListActive + Evaluate |
+
+### 驗證方式
+
+1. **Unit tests** (`compiler_test.go`): 對每種 node type / operator / field type 驗證 `Compile(tree)(ctx) == Evaluate(tree, ctx)`
+2. **Benchmark** (`compiler_test.go`): `BenchmarkCompiled` vs `BenchmarkTreeWalk`，比較 ns/op 和 **allocs/op**
+3. **Escape analysis**: `go build -gcflags='-m' ./service/base/rule/usecase/` 確認 closure eval path 無非預期逃逸
+4. **Integration**: `docker compose up` → API create rule → worker 透過 pub/sub 秒級 reload
+
+---
+
+## Phase 5: 非同步 Kafka Produce + Result Notification Worker
 
 分兩部分：
 
-### 4a: Worker 端改為非同步 Produce
+### 5a: Worker 端改為非同步 Produce
 
 **問題**：現在 Worker produce 到 results topic 是同步等 broker ACK（~0.5-1ms），但 behavior_log 已在步驟 1 寫進 DB，result produce 失敗不會丟資料。
 
@@ -478,7 +685,7 @@ func StartDeliveryReporter(p *kafka.Producer) {
 
 **預期效果**: 每個 event 省 ~0.5-1ms
 
-### 4b: 新增 Result Notification Worker
+### 5b: 新增 Result Notification Worker
 
 **目的**：消費 `rule-engine-results` topic，對匹配的結果發 REST callback 通知下游服務。
 
@@ -573,7 +780,7 @@ notifier:
 **behavior_logs 加 status 欄位不可行**：
 
 - `pending → completed` 狀態機要求中間步驟的副作用可 rollback 或追蹤，但 CEP progress（Redis）、Kafka produce 都是不可逆的外部操作
-- UPDATE status='completed' 的時機兩難：放在 Kafka produce 之前，produce 失敗就丟事件；放在之後，Phase 4a async produce 拿不到同步結果
+- UPDATE status='completed' 的時機兩難：放在 Kafka produce 之前，produce 失敗就丟事件；放在之後，Phase 5a async produce 拿不到同步結果
 - 把流程控制欄位（status）混進業務資料表（behavior_logs）是職責混淆
 
 ### 解法：分離去重 + 每步冪等
@@ -748,7 +955,7 @@ CREATE TABLE IF NOT EXISTS processed_events (
 ### 與其他 Phase 的關係
 
 - **不再影響 behavior_logs schema** — behavior_logs 保持純業務資料表
-- **Phase 4a 相容** — async produce 不影響此設計，因為 processed_events 的 completed 標記可以放在 produce 呼叫之後（async produce 只是不等 ACK，呼叫本身是同步的）
+- **Phase 5a 相容** — async produce 不影響此設計，因為 processed_events 的 completed 標記可以放在 produce 呼叫之後（async produce 只是不等 ACK，呼叫本身是同步的）
 - **Phase 3 安全** — rebalance 時同一 event 可能被兩個 consumer 處理，但 UPSERT processed_events 是原子操作，attempts 計數準確；pipeline 每步冪等，重複執行不會產生錯誤結果
 - 此修法應在 Phase 2 之前做，因為它影響 Execute 的流程和 error handling
 
@@ -761,11 +968,12 @@ Bug Fix (Retry Duplicate Event)        → 無依賴，最優先
 Phase 1 (DB Pool + PreparedStmt)       → 無依賴，已完成 ✅
 Phase 2 (Batch Aggregation SQL)        → 依賴 Phase 1 + Bug Fix
 Phase 3 (Per-Partition Goroutine)      → 依賴 Phase 1
-Phase 4a (Async Produce)               → 無依賴，可隨時做
-Phase 4b (Notification Worker)         → 依賴 Phase 4a（需要 results topic 有資料）
+Phase 4  (Rule Strategy Compilation)   → 依賴 Phase 3（需要 per-partition worker 架構）
+Phase 5a (Async Produce)               → 無依賴，可隨時做
+Phase 5b (Notification Worker)         → 依賴 Phase 5a（需要 results topic 有資料）
 ```
 
-Phase 1 → 2 → 3 → 4 逐步做，每個 phase 完成後跑一次 `BenchmarkThroughput_Integration` 驗證效果。
+Phase 1 → 2 → 3 → 4 → 5 逐步做，每個 phase 完成後跑一次 `BenchmarkThroughput_Integration` 驗證效果。
 
 ## 預期累計效果
 
@@ -776,7 +984,8 @@ Phase 1 → 2 → 3 → 4 逐步做，每個 phase 完成後跑一次 `Benchmark
 | Phase 1       | ~2000 events/s         |
 | Phase 1+2     | ~4000 events/s         |
 | Phase 1+2+3   | ~8000-12000 events/s   |
-| Phase 1+2+3+4 | ~10000-15000 events/s  |
+| Phase 1+2+3+4 | +reduced GC pause, lower p99 latency |
+| Phase 1+2+3+4+5 | ~10000-15000 events/s |
 
 ## 要改的檔案
 
@@ -796,12 +1005,18 @@ Phase 1 → 2 → 3 → 4 逐步做，每個 phase 完成後跑一次 `Benchmark
 | `service/base/behavior/model/interface.go`             | 2     | interface 加 BatchAggregate                                                |
 | `service/base/behavior/repository/db/behavior.go`      | 2     | 新增 BatchAggregate method                                                 |
 | `service/base/behavior/usecase/behavior.go`            | 2     | 透傳 BatchAggregate                                                        |
-| `service/bff/worker/usecase/event_usecase.go`          | 2, 4a | 改用 BatchAggregate、改呼叫 ProduceAsync                                   |
+| `service/base/rule/model/compiled.go`                  | 4     | 新增：CompiledRule struct                                                  |
+| `service/base/rule/model/interface.go`                 | 4     | 新增：RuleRegistryInterface                                                |
+| `service/base/rule/usecase/compiler.go`                | 4     | 新增：Compile function + RuleRegistry                                      |
+| `service/base/rule/usecase/compiler_test.go`           | 4     | 新增：unit test + benchmark + escape analysis                              |
+| `service/base/rule/usecase/strategy.go`                | 4     | 修改：invalidateCache 加 Publish                                           |
+| `service/bff/worker/init.go`                           | 4     | 修改：建立 RuleRegistry，傳給 EventUsecase                                 |
+| `service/bff/worker/usecase/event_usecase.go`          | 2, 4, 5a | 改用 BatchAggregate、compiled rules、ProduceAsync                                   |
 | `service/bff/worker/event_manager.go`                  | 3     | Per-partition goroutine dispatch、rebalance callback                       |
-| `pkg/kafka/kafka.go`                                   | 3, 4a | auto.commit + auto.offset.store 設定、ProduceAsync + StartDeliveryReporter |
-| `service/bff/notifier/notification_manager.go`         | 4b    | 新增：消費 results topic 的 WorkerManager                                  |
-| `service/bff/notifier/usecase/notification_usecase.go` | 4b    | 新增：callback + retry 邏輯                                                |
-| `cmd/notifier/main.go`                                 | 4b    | 新增：notifier entry point                                                 |
+| `pkg/kafka/kafka.go`                                   | 3, 5a | auto.commit + auto.offset.store 設定、ProduceAsync + StartDeliveryReporter |
+| `service/bff/notifier/notification_manager.go`         | 5b    | 新增：消費 results topic 的 WorkerManager                                  |
+| `service/bff/notifier/usecase/notification_usecase.go` | 5b    | 新增：callback + retry 邏輯                                                |
+| `cmd/notifier/main.go`                                 | 5b    | 新增：notifier entry point                                                 |
 
 ## 驗證方式
 

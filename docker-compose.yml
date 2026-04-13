@@ -5,6 +5,7 @@ services:
       -c shared_buffers=256MB
       -c effective_cache_size=512MB
       -c work_mem=4MB
+      -c max_connections=200
     environment:
       POSTGRES_USER: rule_engine
       POSTGRES_PASSWORD: rule_engine
