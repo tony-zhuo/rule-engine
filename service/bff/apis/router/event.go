@@ -9,6 +9,5 @@ import (
 func EventRegister(app *gin.RouterGroup, cfg *config.Config) {
 	ctrl := wire.InitializeEventController(cfg)
 	g := app.Group("/events")
-	g.POST("", ctrl.ProcessEvent)
 	g.POST("/check", ctrl.CheckEvent)
 }

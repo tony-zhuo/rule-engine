@@ -2,15 +2,11 @@ package usecase
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/google/uuid"
-	pkgkafka "github.com/tony-zhuo/rule-engine/pkg/kafka"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 	cepModel "github.com/tony-zhuo/rule-engine/service/base/cep/model"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
@@ -25,16 +21,7 @@ type EngineUsecaseInterface interface {
 	UpdateRule(ctx context.Context, id uint64, req *ruleModel.UpdateRuleStrategyReq) error
 	SetRuleStatus(ctx context.Context, id uint64, status ruleModel.RuleStrategyStatus) error
 	// Event processing
-	ProcessEvent(ctx context.Context, req *ProcessEventReq) error
 	CheckEvent(ctx context.Context, req *CheckEventReq) (*CheckEventResp, error)
-}
-
-type ProcessEventReq struct {
-	EventID    string                     `json:"event_id"`
-	MemberID   string                     `json:"member_id"   binding:"required"`
-	Behavior   behaviorModel.BehaviorType `json:"behavior"    binding:"required"`
-	Fields     map[string]any             `json:"fields"`
-	OccurredAt time.Time                  `json:"occurred_at"`
 }
 
 type CheckEventReq struct {
@@ -74,27 +61,18 @@ type EngineUsecase struct {
 	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface
 	eventStore     behaviorModel.BehaviorEventStoreInterface
 	cepProcessor   cepModel.ProcessorInterface
-	producer       *kafka.Producer
-	eventsTopic    string
-	resultsTopic   string
 }
 
 func NewEngineUsecase(
 	ruleStrategyUC ruleModel.RuleStrategyUsecaseInterface,
 	eventStore behaviorModel.BehaviorEventStoreInterface,
 	cepProcessor cepModel.ProcessorInterface,
-	producer *kafka.Producer,
-	eventsTopic string,
-	resultsTopic string,
 ) *EngineUsecase {
 	_engineUCOnce.Do(func() {
 		_engineUCObj = &EngineUsecase{
 			ruleStrategyUC: ruleStrategyUC,
 			eventStore:     eventStore,
 			cepProcessor:   cepProcessor,
-			producer:       producer,
-			eventsTopic:    eventsTopic,
-			resultsTopic:   resultsTopic,
 		}
 	})
 	return _engineUCObj
@@ -120,29 +98,8 @@ func (uc *EngineUsecase) SetRuleStatus(ctx context.Context, id uint64, status ru
 	return uc.ruleStrategyUC.SetStatus(ctx, id, status)
 }
 
-// ProcessEvent produces the event to Kafka for async processing by the worker.
-func (uc *EngineUsecase) ProcessEvent(ctx context.Context, req *ProcessEventReq) error {
-	if req.EventID == "" {
-		req.EventID = uuid.New().String()
-	}
-	if req.OccurredAt.IsZero() {
-		req.OccurredAt = time.Now()
-	}
-
-	data, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("process event: marshal: %w", err)
-	}
-
-	if err := pkgkafka.Produce(uc.producer, uc.eventsTopic, req.MemberID, data); err != nil {
-		return fmt.Errorf("process event: produce: %w", err)
-	}
-	return nil
-}
-
 // CheckEvent evaluates rules and CEP patterns synchronously against an event.
-// The hot path uses Redis only (no PostgreSQL). Event data is produced to Kafka
-// asynchronously for PG write-back by the worker.
+// The hot path uses Redis only (no PostgreSQL).
 func (uc *EngineUsecase) CheckEvent(ctx context.Context, req *CheckEventReq) (*CheckEventResp, error) {
 	// 1. Defaults.
 	if req.EventID == "" {
@@ -232,19 +189,10 @@ func (uc *EngineUsecase) CheckEvent(ctx context.Context, req *CheckEventReq) (*C
 		ProcessedAt:     time.Now(),
 	}
 
-	// 9. Fire-and-forget: produce event to Kafka for PG write-back.
-	go uc.produceEventAsync(req)
-
+	// NOTE: Kafka write-back to PG is intentionally omitted here. CheckEvent is
+	// the hot path optimized for throughput — any per-request work (marshal,
+	// Kafka enqueue, goroutine creation) is pure overhead. If PG audit data is
+	// needed, it must come from a separate source (e.g. a periodic batch job
+	// reading from Redis, or the async POST /v1/events endpoint).
 	return resp, nil
-}
-
-func (uc *EngineUsecase) produceEventAsync(req *CheckEventReq) {
-	data, err := json.Marshal(req)
-	if err != nil {
-		slog.Error("check event: marshal for kafka", "event_id", req.EventID, "error", err)
-		return
-	}
-	if err := pkgkafka.Produce(uc.producer, uc.eventsTopic, req.MemberID, data); err != nil {
-		slog.Error("check event: produce to kafka", "event_id", req.EventID, "error", err)
-	}
 }

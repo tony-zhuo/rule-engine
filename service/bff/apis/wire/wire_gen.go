@@ -21,7 +21,6 @@ import (
 func InitializeRuleController(cfg *config.Config) *controller.RuleController {
 	db := provideGormDB()
 	rdb := provideRedisClient()
-	producer := provideKafkaProducer(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
 	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC, rdb)
@@ -29,14 +28,13 @@ func InitializeRuleController(cfg *config.Config) *controller.RuleController {
 	cepStore := cepRedis.NewRedisStore(rdb)
 	cepUC := cepUsecase.NewCEPUsecase(cepStore, ruleUC)
 	loadCEPPatterns(cfg, cepUC)
-	engineUC := usecase.NewEngineUsecase(ruleStrategyUC, eventStore, cepUC, producer, cfg.Kafka.Topics.Events, cfg.Kafka.Topics.Results)
+	engineUC := usecase.NewEngineUsecase(ruleStrategyUC, eventStore, cepUC)
 	return controller.GetRuleController(engineUC)
 }
 
 func InitializeEventController(cfg *config.Config) *controller.EventController {
 	db := provideGormDB()
 	rdb := provideRedisClient()
-	producer := provideKafkaProducer(cfg)
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
 	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC, rdb)
@@ -44,7 +42,7 @@ func InitializeEventController(cfg *config.Config) *controller.EventController {
 	cepStore := cepRedis.NewRedisStore(rdb)
 	cepUC := cepUsecase.NewCEPUsecase(cepStore, ruleUC)
 	loadCEPPatterns(cfg, cepUC)
-	engineUC := usecase.NewEngineUsecase(ruleStrategyUC, eventStore, cepUC, producer, cfg.Kafka.Topics.Events, cfg.Kafka.Topics.Results)
+	engineUC := usecase.NewEngineUsecase(ruleStrategyUC, eventStore, cepUC)
 	return controller.GetEventController(engineUC)
 }
 

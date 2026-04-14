@@ -24,27 +24,6 @@ func GetEventController(uc usecase.EngineUsecaseInterface) *EventController {
 	return _eventCtrlObj
 }
 
-// ProcessEvent godoc
-// @Summary Submit a behavioral event for async processing
-// @Tags events
-// @Accept json
-// @Produce json
-// @Param body body usecase.ProcessEventReq true "Event"
-// @Success 202
-// @Router /v1/events [post]
-func (c *EventController) ProcessEvent(ctx *gin.Context) {
-	var req usecase.ProcessEventReq
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if err := c.uc.ProcessEvent(ctx, &req); err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	ctx.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
-}
-
 // CheckEvent godoc
 // @Summary Evaluate rules and CEP patterns synchronously against an event
 // @Tags events

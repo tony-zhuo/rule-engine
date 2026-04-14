@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tony-zhuo/rule-engine/config"
 	"github.com/tony-zhuo/rule-engine/service/bff/apis/router"
-	"github.com/tony-zhuo/rule-engine/service/bff/apis/wire"
 )
 
 func ApiRegister(cfg *config.Config) {
@@ -48,6 +47,5 @@ func ApiRegister(cfg *config.Config) {
 		slog.Error("server shutdown error", "error", err)
 	}
 
-	wire.CloseProducer()
 	slog.Info("api server stopped")
 }
