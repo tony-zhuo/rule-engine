@@ -961,77 +961,268 @@ CREATE TABLE IF NOT EXISTS processed_events (
 
 ---
 
+## Phase 6: 架構重構 — Sync API + Redis Hot Path（已完成 ✅）
+
+### 問題
+
+Phase 1-4 優化後，PostgreSQL connection pool 仍然是吞吐量的天花板。每個事件在 hot path 上有 3 次 DB round-trip（UpsertWithBehaviorLog、BatchAggregate、MarkCompleted）。
+
+### 架構變更
+
+```
+Before:  Client → API (202) → Kafka → Worker → [PG×3] → Kafka results
+After:   Client → API (200) → [Redis only] → Response + Kafka → Worker → [PG×1]
+```
+
+- **新增 `POST /v1/events/check`** — 同步評估規則 + CEP，回傳 matched rules/patterns
+- **保留 `POST /v1/events`** — 原有 async 端點，向後相容
+- **Worker 簡化為 PG write-back** — 只做 `INSERT behavior_logs ON CONFLICT DO NOTHING`
+- **CEP 移到 API** — CEP 已用 Redis 存 state，直接在 API 同步處理
+
+### 實作內容
+
+#### 6.1 Redis Behavior Event Store
+
+**新檔案**: `service/base/behavior/repository/redis/behavior.go`
+
+- Redis Sorted Set 儲存事件（key: `rule_engine:events:{member_id}:{behavior}`）
+- Score: `occurred_at.UnixMilli()`，Member: `{event_id}\x00{json_fields}`
+- `StoreEvent` — Lua script: ZADD NX + ZREMRANGEBYSCORE（清理過期）+ EXPIRE
+- `BatchAggregate` — Pipeline 多個 ZRANGEBYSCORE，Go 端計算 COUNT/SUM/AVG/MAX/MIN
+- `StoreAndAggregate` — 合併 StoreEvent + BatchAggregate 為單一 Pipeline（1 round-trip）
+- maxWindow 由實際規則的最長時間窗口決定（`TimeWindow.Duration()` + `MaxWindowFromKeys()`）
+
+**單元測試**: `service/base/behavior/repository/redis/behavior_test.go`（9 個測試，使用 miniredis）
+
+#### 6.2 Rule Strategy Compilation 增強
+
+- `CompiledRuleSet` struct — 包含 `Strategies []CompiledStrategy` + `MaxWindow time.Duration`
+- `ListActiveCompiled` 回傳 `*CompiledRuleSet`，在 compile 階段預計算 maxWindow
+- `TimeWindow.Duration()` — 新增方法轉換為 `time.Duration`
+
+#### 6.3 CEP Pattern Compilation
+
+- CEP 的 `PatternState.Condition` 在 `AddPattern` 時預編譯為 `CompiledRule` closure
+- `matchState` 改為直接呼叫 compiled closure，不走 `ruleUC.Evaluate()` 遞迴
+- 編譯失敗時 fallback 回 interpreted 模式
+
+#### 6.4 共用邏輯提取
+
+- `CollectUniqueAggregateKeys()` — 從 compiled strategies 提取去重的 aggregate keys
+- `BuildAggregateConds()` — 將 aggregate keys 轉為 behavior aggregate conditions
+- 以上從 worker 的 `event_usecase.go` 提取到 `service/base/rule/usecase/aggregate.go`
+
+#### 6.5 Sync API Endpoint
+
+- `CheckEvent` handler — `POST /v1/events/check`，同步評估規則 + CEP
+- Hot path: Redis StoreAndAggregate (pipeline) → Compiled rule evaluation → CEP → Response
+- Fire-and-forget goroutine: produce event to Kafka for PG write-back
+
+#### 6.6 Worker 簡化
+
+- `EventUsecase` 簡化為只做 `behaviorRepo.Create()`（INSERT ON CONFLICT DO NOTHING）
+- 移除: `ruleStrategyUC`, `cepProcessor`, `processedEventRepo`, `producer`, `resultsTopic`
+
+### Benchmark 結果（BenchmarkCheckEvent_Throughput_Integration，Apple M2 Pro）
+
+測試環境：12 active compiled rules, 3 CEP patterns, real Redis + real PostgreSQL (for rule loading)
+
+| Concurrency | events/s | latency/op |
+|-------------|----------|-----------|
+| 1 | 2,228 | 449 µs |
+| 4 | 1,813 | 552 µs |
+| 8 | 1,433 | 698 µs |
+| 16 | 1,184 | 844 µs |
+| 32 | 977 | 1.02 ms |
+
+---
+
+## Phase 7: Inverse Scaling 調查與優化（已完成 ✅）
+
+### 問題
+
+Phase 6 的 benchmark 顯示**反向擴展**：concurrency 從 1 增加到 32 時，throughput 從 2,228 events/s 下降到 977 events/s。
+
+### 調查過程
+
+#### 排除的嫌疑犯
+
+1. **`sync.Once` lock contention** — 排除。`Once.Do()` 完成後只做 `atomic.LoadUint32`（~1ns），不拿 mutex。且 benchmark 用非 singleton 建構。
+2. **Redis connection pool size** — 排除。Pool size 從 120 調到 1000，效能差異在 ±5% 誤差範圍內，不是瓶頸。
+
+| Pool Config | 1 goroutine | 8 goroutines | 32 goroutines |
+|-------------|-------------|--------------|---------------|
+| default (120) | 430 events/s | 566 events/s | 531 events/s |
+| pool=50 idle=10 | 375 | 530 | 489 |
+| pool=100 idle=20 | 364 | 499 | 462 |
+| pool=200 idle=50 | 329 | 431 | 412 |
+
+#### 確認的根本原因
+
+**Redis single-threaded 是物理瓶頸。** 每個 CheckEvent 產生多次 Redis command（StoreEvent Lua + ZRANGEBYSCORE pipeline + CEP SMEMBERS + MGET），Redis server 排隊處理。32 個 goroutine 同時送 command，latency 線性增加。
+
+附帶發現：benchmark 累積資料導致 sorted set 膨脹到 11,091 筆，ZRANGEBYSCORE 掃描 + Go 端 `json.Unmarshal` × N 成為顯著開銷。
+
+### 實施的優化
+
+#### 7.1 In-Memory Rule Cache（`atomic.Pointer`）
+
+**問題**：`ListActiveCompiled()` 每次呼叫都 `rdb.Get → json.Unmarshal → Compile`。
+
+**修復**：`strategy.go` 新增 `cached atomic.Pointer[CompiledRuleSet]`。
+- Hot path: `atomic.Pointer.Load()`（~1ns，zero alloc）
+- Cache miss 時 lazy compile + `atomic.Store`
+- `invalidateCache()` 同時清除 in-memory cache + Redis cache
+
+#### 7.2 CEP Progress MGET 批次查詢
+
+**問題**：`ListByMember` 做 SMEMBERS + N 個獨立 GET，N 次 Redis round-trip。
+
+**修復**：`cep.go` 改用 SMEMBERS + MGET（2 次 round-trip）。
+
+#### 7.3 Pipeline 合併 StoreEvent + BatchAggregate
+
+**問題**：StoreEvent（Lua）和 BatchAggregate（Pipeline）是 2 次 Redis round-trip。
+
+**修復**：`StoreAndAggregate` 方法將 Lua script + 所有 ZRANGEBYSCORE 放進同一個 Pipeline.Exec()（1 次 round-trip）。
+
+### 優化後 Benchmark 結果
+
+| Concurrency | Phase 6 (before) | Phase 7 (after) |
+|-------------|-----------------|-----------------|
+| 1 | 2,228 | 2,225 |
+| 4 | 1,813 | 1,670 |
+| 8 | 1,433 | 1,382 |
+| 16 | 1,184 | 1,158 |
+| 32 | 977 | 968 |
+
+Inverse scaling 曲線基本不變。**證實瓶頸是 Redis server single-threaded 的物理限制**，不是 Go 端的鎖或 GC 問題。
+
+### 初步結論（後來證實是錯的）
+
+原本判斷：「單台 Redis 架構下，~2,000 events/s 到 ~1,000 events/s 是物理天花板。」
+
+**這個結論是錯的。** 如果真是 Redis CPU 打滿，曲線應該是 **plateau**（併發 4 = 1800，併發 32 = 2000 持平），而不是 **inverse scaling**（併發 32 = 977 比併發 1 少了一半）。
+
+### pprof 實測證據（workers-32, 15 秒 benchmark）
+
+#### CPU Profile（1056 秒 CPU 時間）
+```
+encoding/json.(*decodeState).object   22.63%  ← JSON 解碼
+runtime.mallocgc                       14.50%  ← 記憶體分配
+runtime.pthread_cond_wait               6.71%  ← 等條件變數
+runtime.scanobject + GC 相關           ~10%   ← GC scan 物件
+```
+
+#### Memory Profile（15 秒 benchmark 期間共 allocate 492 GB！）
+```
+encoding/json.Unmarshal                78.26%  ← 主犯
+reflect.mapassign_faststr0             37.66%  ← unmarshal 填 map[string]any
+StoreAndAggregate                      99.56%  ← 幾乎所有 alloc 都從這來
+```
+
+#### Block Profile（goroutine 共阻塞 12.67 小時）
+```
+(*baseClient)._getConn                 98.76%  ← 全部卡在「拿 Redis 連線」
+Pipeline.Exec                          47.98%
+Process                                50.79%
+```
+
+### 真正的根本原因
+
+**Go 端的 GC 風暴 + 連線池阻塞的惡性循環**，不是 Redis 物理極限：
+
+1. ZRANGEBYSCORE 回傳 N 筆 entries（benchmark 累積到幾千筆）
+2. 每筆都 `json.Unmarshal` → 產生 `map[string]any` → heap allocation
+3. 32 goroutine 同時做這件事 → 每秒幾十萬個 alloc → GC STW 暫停
+4. GC 暫停期間，Redis 連線被 goroutine 持有但沒人在讀 → 其他 goroutine 在 `_getConn` 排隊
+5. 越多 goroutine → 越多 alloc → 越多 GC STW → 越多連線等待 → **inverse scaling**
+
+### 下一步：真正的解決方向
+
+**必須消除 `json.Unmarshal × N`**。目前 Phase 7 的三項優化都沒有解決這個核心問題（in-memory cache 和 MGET 只是周邊優化），所以吞吐量曲線幾乎不變。
+
+#### Fix 方案（Phase 8 候選）
+
+**A. 改變 Sorted Set member 格式**
+```
+目前: member = "evt-001\x00{\"amount\":5000,\"address\":\"0x...\"}"
+改為: member = "evt-001|5000|0x..."  (pipe-separated)
+      或用 protobuf/msgpack 取代 JSON
+```
+
+**B. Field-specific Sorted Sets**
+```
+每個 field 一個 sorted set:
+  rule_engine:events:{member}:{behavior}:amount
+    score = field value
+    member = event_id
+
+COUNT → ZCOUNT（直接 Redis 算）
+SUM/AVG/MAX/MIN → ZRANGEBYSCORE 取 score（不需要解析 member）
+```
+
+這樣 ZRANGEBYSCORE 回傳的只有 event_id 字串，**完全不需要 JSON unmarshal**，GC 壓力歸零。
+
+**C. `sync.Pool` 重用 `map[string]any`**
+雖然治標不治本，但短期可降低 GC 壓力。
+
+**D. 改用 `json.Decoder` with stream + `json.Number`**
+比 `json.Unmarshal` 省一些 allocation，但治標不治本。
+
+---
+
 ## 實作順序與依賴
 
 ```
 Bug Fix (Retry Duplicate Event)        → 無依賴，最優先
 Phase 1 (DB Pool + PreparedStmt)       → 無依賴，已完成 ✅
-Phase 2 (Batch Aggregation SQL)        → 依賴 Phase 1 + Bug Fix
-Phase 3 (Per-Partition Goroutine)      → 依賴 Phase 1
-Phase 4  (Rule Strategy Compilation)   → 依賴 Phase 3（需要 per-partition worker 架構）
+Phase 2 (Batch Aggregation SQL)        → 依賴 Phase 1 + Bug Fix，已完成 ✅
+Phase 3 (Per-Partition Goroutine)      → 依賴 Phase 1，已完成 ✅
+Phase 4 (Rule Strategy Compilation)    → 依賴 Phase 3，已完成 ✅
 Phase 5a (Async Produce)               → 無依賴，可隨時做
-Phase 5b (Notification Worker)         → 依賴 Phase 5a（需要 results topic 有資料）
+Phase 5b (Notification Worker)         → 依賴 Phase 5a
+Phase 6 (Sync API + Redis Hot Path)    → 已完成 ✅（架構重構，PG 移出 hot path）
+Phase 7 (Inverse Scaling 調查+優化)     → 已完成 ✅（in-memory cache, MGET, pipeline 合併）
+Phase 8 (消除 JSON unmarshal, GC 壓力)  → 待實作（pprof 證實是真兇）
 ```
 
-Phase 1 → 2 → 3 → 4 → 5 逐步做，每個 phase 完成後跑一次 `BenchmarkThroughput_Integration` 驗證效果。
+## 累計效果
 
-## 預期累計效果
+| 完成階段 | 架構 | 吞吐量 |
+|---------|------|--------|
+| Baseline | Worker (PG) | crash at 4+ workers |
+| Phase 1 | Worker (PG) | ~2,000 events/s (4 workers) |
+| Phase 1+2 | Worker (PG) | ~4,000 events/s |
+| Phase 1+2+3 | Worker (PG) | ~8,000-12,000 events/s |
+| Phase 4 | Worker (PG) | +18% rule eval speedup |
+| **Phase 6** | **Sync API (Redis)** | **~2,200 events/s (1 concurrency), p50 ~450µs** |
+| **Phase 7** | **Sync API (Redis)** | **same throughput, reduced Redis round-trips** |
 
+Phase 6 的吞吐量看起來比 Phase 3 低，但本質不同：
+- Phase 3 是 async worker，client 拿不到即時結果
+- Phase 6 是 sync API，client 在 **450µs 內拿到完整風控結果**（matched rules + CEP patterns）
 
-| 完成階段      | 預估吞吐量 (4 workers) |
-| ------------- | ---------------------- |
-| Baseline      | crash                  |
-| Phase 1       | ~2000 events/s         |
-| Phase 1+2     | ~4000 events/s         |
-| Phase 1+2+3   | ~8000-12000 events/s   |
-| Phase 1+2+3+4 | +reduced GC pause, lower p99 latency |
-| Phase 1+2+3+4+5 | ~10000-15000 events/s |
+**關於 Phase 7 inverse scaling**：原本以為是 Redis 物理極限（錯誤判斷）。pprof 實測確認真兇是 Go 端 `json.Unmarshal` 引發的 GC 風暴（15 秒 benchmark 內 allocate 492 GB，JSON 解碼佔 CPU 22%），導致 goroutine 在 Redis 連線池上排隊（98.76% 的阻塞時間）。
 
-## 要改的檔案
-
-
-| 檔案                                                   | Phase | 改什麼                                                                     |
-| ------------------------------------------------------ | ----- | -------------------------------------------------------------------------- |
-| `database/migrate/init/005_create_processed_events.up.sql` | Bug Fix | 新增 processed_events 表                                              |
-| `service/base/behavior/model/entity.go`                | Bug Fix | 新增 ProcessedEvent struct                                                |
-| `service/base/behavior/model/interface.go`             | Bug Fix | interface 加 Upsert / MarkCompleted / MarkFailed                          |
-| `service/base/behavior/repository/db/processed_event.go` | Bug Fix | processed_events UPSERT + UPDATE 實作                                   |
-| `service/base/behavior/repository/db/behavior.go`      | Bug Fix | Create 移除 ErrDuplicateEvent 回傳                                        |
-| `service/bff/worker/usecase/event_usecase.go`          | Bug Fix | 改用 processed_events 去重 + 移除 ErrDuplicateEvent 邏輯                  |
-| `service/base/cep/model/entity.go`                     | Bug Fix | PatternProgress 加 ProcessedEvents 欄位                                   |
-| `service/base/cep/usecase/cep.go`                      | Bug Fix | advanceProgress 加 event_id 冪等檢查                                      |
-| `pkg/db/db.go`                                         | 1     | Pool config + PreparedStmt                                                 |
-| `config.yaml` / `config.example.yaml`                  | 1     | DB pool 參數                                                               |
-| `service/base/behavior/model/interface.go`             | 2     | interface 加 BatchAggregate                                                |
-| `service/base/behavior/repository/db/behavior.go`      | 2     | 新增 BatchAggregate method                                                 |
-| `service/base/behavior/usecase/behavior.go`            | 2     | 透傳 BatchAggregate                                                        |
-| `service/base/rule/model/compiled.go`                  | 4     | 新增：CompiledRule struct                                                  |
-| `service/base/rule/model/interface.go`                 | 4     | 新增：RuleRegistryInterface                                                |
-| `service/base/rule/usecase/compiler.go`                | 4     | 新增：Compile function + RuleRegistry                                      |
-| `service/base/rule/usecase/compiler_test.go`           | 4     | 新增：unit test + benchmark + escape analysis                              |
-| `service/base/rule/usecase/strategy.go`                | 4     | 修改：invalidateCache 加 Publish                                           |
-| `service/bff/worker/init.go`                           | 4     | 修改：建立 RuleRegistry，傳給 EventUsecase                                 |
-| `service/bff/worker/usecase/event_usecase.go`          | 2, 4, 5a | 改用 BatchAggregate、compiled rules、ProduceAsync                                   |
-| `service/bff/worker/event_manager.go`                  | 3     | Per-partition goroutine dispatch、rebalance callback                       |
-| `pkg/kafka/kafka.go`                                   | 3, 5a | auto.commit + auto.offset.store 設定、ProduceAsync + StartDeliveryReporter |
-| `service/bff/notifier/notification_manager.go`         | 5b    | 新增：消費 results topic 的 WorkerManager                                  |
-| `service/bff/notifier/usecase/notification_usecase.go` | 5b    | 新增：callback + retry 邏輯                                                |
-| `cmd/notifier/main.go`                                 | 5b    | 新增：notifier entry point                                                 |
+Phase 8（未實作）要從根本解決：消除 ZRANGEBYSCORE 回來資料的 JSON unmarshal，例如改為 field-specific sorted sets 讓聚合只需讀 score 而不需解析 member。
 
 ## 驗證方式
 
-每個 phase 完成後：
-
 ```bash
 # 啟動 infra
-make docker-up
+docker compose up -d
 
-# 跑 throughput benchmark
-go test -bench=BenchmarkThroughput_Integration -benchtime=30s ./service/bff/worker/usecase/
+# Worker write-back benchmark
+go test -bench=BenchmarkWriteBack -benchtime=10s ./service/bff/worker/usecase/
+
+# API CheckEvent benchmark（需要乾淨 Redis）
+docker exec rule-engine-redis-master-1 redis-cli FLUSHDB
+go test -bench=BenchmarkCheckEvent_Throughput_Integration -benchtime=10s ./service/bff/apis/usecase/
+
+# Rule compilation benchmark
+go test -bench=BenchmarkCompile_vs_Interpret ./service/base/rule/usecase/
+
+# Redis behavior store unit tests
+go test -v ./service/base/behavior/repository/redis/
 ```
-
-觀察：
-
-1. workers-4/8/16 不再 crash
-2. events/s 數字逐步提升
-3. 無 SLOW SQL 警告
