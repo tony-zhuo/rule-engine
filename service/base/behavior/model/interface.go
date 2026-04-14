@@ -24,17 +24,28 @@ type BehaviorUsecaseInterface interface {
 
 // BehaviorEventStoreInterface is the Redis-backed real-time event store
 // that replaces PostgreSQL on the hot path for event storage and aggregation.
+//
+// Events are encoded as pipe-separated strings in sorted set members:
+//   "event_id|val0|val1|..."
+// where val0..valN correspond to the numeric fields listed in the per-behavior
+// schema. This format is zero-allocation to parse (strings.Cut + strconv.ParseFloat),
+// avoiding the GC pressure of JSON unmarshaling on the hot path.
+//
+// Because a single CheckEvent may aggregate across multiple behaviors
+// (e.g. CryptoWithdraw:SUM:amount and Login:COUNT), methods take a
+// map[BehaviorType]*FieldSchema. The entry for event.Behavior drives
+// encoding on write; each entry drives decoding on read.
 type BehaviorEventStoreInterface interface {
 	// StoreEvent adds an event to the member's behavior sorted set in Redis.
-	// maxWindow controls how long events are retained (pruning + TTL).
-	// Returns true if the event was newly inserted (not a duplicate).
-	StoreEvent(ctx context.Context, event *BehaviorEvent, maxWindow time.Duration) (bool, error)
+	// schemas[event.Behavior] describes the field layout for encoding.
+	// maxWindow controls retention (pruning + TTL). Returns true if newly inserted.
+	StoreEvent(ctx context.Context, event *BehaviorEvent, schemas map[BehaviorType]*FieldSchema, maxWindow time.Duration) (bool, error)
 	// BatchAggregate computes multiple aggregations from Redis sorted sets.
-	// Returns a map keyed by AggregateCond.Key with float64 results.
-	BatchAggregate(ctx context.Context, memberID string, conds []AggregateCond) (map[string]float64, error)
-	// StoreAndAggregate combines StoreEvent + BatchAggregate into a single Redis
-	// pipeline round-trip. maxWindow controls event retention.
-	StoreAndAggregate(ctx context.Context, event *BehaviorEvent, conds []AggregateCond, maxWindow time.Duration) (map[string]float64, error)
+	// schemas is required for SUM/AVG/MAX/MIN; COUNT works without it.
+	BatchAggregate(ctx context.Context, memberID string, conds []AggregateCond, schemas map[BehaviorType]*FieldSchema) (map[string]float64, error)
+	// StoreAndAggregate combines StoreEvent + BatchAggregate into a single
+	// Redis pipeline round-trip.
+	StoreAndAggregate(ctx context.Context, event *BehaviorEvent, schemas map[BehaviorType]*FieldSchema, conds []AggregateCond, maxWindow time.Duration) (map[string]float64, error)
 }
 
 // ProcessedEventRepoInterface tracks fully-processed events for dedup on retry.

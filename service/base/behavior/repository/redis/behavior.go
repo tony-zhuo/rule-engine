@@ -15,14 +15,22 @@ import (
 
 var _ model.BehaviorEventStoreInterface = (*BehaviorEventStore)(nil)
 
-const redisEventsPrefix = "rule_engine:events:"
+const (
+	redisEventsPrefix = "rule_engine:events:"
+	memberSeparator   = '|'
+)
 
 // BehaviorEventStore stores behavioral events in Redis Sorted Sets for
 // real-time aggregation queries, replacing PostgreSQL on the hot path.
 //
-// Key schema: rule_engine:events:{member_id}:{behavior}
-// Score: occurred_at as Unix milliseconds
-// Member: {event_id}\x00{json_fields}
+// Key schema:   rule_engine:events:{member_id}:{behavior}
+// Score:        occurred_at as Unix milliseconds
+// Member:       "event_id|val0|val1|..." where val0..valN are the numeric
+//               field values in schema order. Missing / non-numeric values
+//               are written as empty between delimiters (parsed as 0).
+//
+// The pipe-separated format is zero-allocation to parse, eliminating the
+// GC pressure that JSON unmarshal caused on the hot path.
 type BehaviorEventStore struct {
 	client *goredis.Client
 }
@@ -34,7 +42,7 @@ func NewBehaviorEventStore(client *goredis.Client) *BehaviorEventStore {
 // storeEventScript atomically: ZADD NX + ZREMRANGEBYSCORE (prune) + EXPIRE.
 // KEYS[1] = sorted set key
 // ARGV[1] = score (occurred_at millis)
-// ARGV[2] = member value (event_id \x00 json_fields)
+// ARGV[2] = member value (encoded)
 // ARGV[3] = cutoff score for pruning
 // ARGV[4] = TTL in seconds
 // Returns 1 if newly added, 0 if duplicate.
@@ -45,20 +53,69 @@ redis.call('EXPIRE', KEYS[1], ARGV[4])
 return added
 `)
 
-func (s *BehaviorEventStore) StoreEvent(ctx context.Context, event *model.BehaviorEvent, maxWindow time.Duration) (bool, error) {
+// encodeMember builds "event_id|val0|val1|..." from an event and schema.
+// Values are formatted with strconv.FormatFloat('f', -1, 64) for a canonical
+// form (no scientific notation, shortest representation).
+func encodeMember(event *model.BehaviorEvent, schema *model.FieldSchema) string {
+	if schema == nil || len(schema.Fields) == 0 {
+		return event.EventID
+	}
+	// Pre-size the builder: event_id + (sep + ~20 chars per field).
+	var b strings.Builder
+	b.Grow(len(event.EventID) + len(schema.Fields)*21)
+	b.WriteString(event.EventID)
+	for _, name := range schema.Fields {
+		b.WriteByte(memberSeparator)
+		if v, ok := event.Fields[name]; ok {
+			if f, ok := toFloat64(v); ok {
+				b.WriteString(strconv.FormatFloat(f, 'f', -1, 64))
+			}
+		}
+	}
+	return b.String()
+}
+
+// parseFieldAt extracts the float64 value at the given schema position from a
+// pipe-separated member string. Position -1 means the caller wants COUNT
+// and no parse is needed. Returns (value, ok) where ok is false if the slot
+// is missing, empty, or unparseable.
+//
+// This function is zero-allocation: strings.Cut returns sub-slices, and
+// strconv.ParseFloat doesn't allocate for valid numeric strings.
+func parseFieldAt(member string, pos int) (float64, bool) {
+	if pos < 0 {
+		return 0, false
+	}
+	// Skip the event_id at position 0 and then `pos` separator-delimited fields.
+	s := member
+	for i := 0; i <= pos; i++ {
+		_, rest, found := strings.Cut(s, string(memberSeparator))
+		if !found {
+			return 0, false
+		}
+		s = rest
+	}
+	// s now starts at the wanted field; take up to the next separator.
+	valStr, _, _ := strings.Cut(s, string(memberSeparator))
+	if valStr == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(valStr, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+func (s *BehaviorEventStore) StoreEvent(ctx context.Context, event *model.BehaviorEvent, schemas map[model.BehaviorType]*model.FieldSchema, maxWindow time.Duration) (bool, error) {
 	key := s.eventKey(event.MemberID, string(event.Behavior))
 	score := float64(event.OccurredAt.UnixMilli())
-
-	fieldsJSON, err := json.Marshal(event.Fields)
-	if err != nil {
-		return false, fmt.Errorf("behavior event store: marshal fields: %w", err)
-	}
-	member := event.EventID + "\x00" + string(fieldsJSON)
+	member := encodeMember(event, schemas[event.Behavior])
 
 	cutoff := time.Now().Add(-maxWindow).UnixMilli()
 	ttlSeconds := int(maxWindow.Seconds())
 	if ttlSeconds <= 0 {
-		ttlSeconds = 24 * 60 * 60 // safety floor: 1 day
+		ttlSeconds = 24 * 60 * 60
 	}
 
 	result, err := storeEventScript.Run(ctx, s.client, []string{key},
@@ -73,16 +130,11 @@ func (s *BehaviorEventStore) StoreEvent(ctx context.Context, event *model.Behavi
 // StoreAndAggregate combines StoreEvent + BatchAggregate into a single Redis
 // pipeline, reducing 2 round-trips to 1. The store Lua script and all
 // ZRANGEBYSCORE commands are sent together in one pipeline.Exec() call.
-func (s *BehaviorEventStore) StoreAndAggregate(ctx context.Context, event *model.BehaviorEvent, conds []model.AggregateCond, maxWindow time.Duration) (map[string]float64, error) {
-	// Prepare store event args.
+func (s *BehaviorEventStore) StoreAndAggregate(ctx context.Context, event *model.BehaviorEvent, schemas map[model.BehaviorType]*model.FieldSchema, conds []model.AggregateCond, maxWindow time.Duration) (map[string]float64, error) {
 	storeKey := s.eventKey(event.MemberID, string(event.Behavior))
 	score := float64(event.OccurredAt.UnixMilli())
+	member := encodeMember(event, schemas[event.Behavior])
 
-	fieldsJSON, err := json.Marshal(event.Fields)
-	if err != nil {
-		return nil, fmt.Errorf("behavior event store: marshal fields: %w", err)
-	}
-	member := event.EventID + "\x00" + string(fieldsJSON)
 	cutoff := time.Now().Add(-maxWindow).UnixMilli()
 	ttlSeconds := int(maxWindow.Seconds())
 	if ttlSeconds <= 0 {
@@ -90,11 +142,9 @@ func (s *BehaviorEventStore) StoreAndAggregate(ctx context.Context, event *model
 	}
 
 	if len(conds) == 0 {
-		// No aggregations needed — just store.
-		_, err := storeEventScript.Run(ctx, s.client, []string{storeKey},
+		if _, err := storeEventScript.Run(ctx, s.client, []string{storeKey},
 			score, member, cutoff, ttlSeconds,
-		).Int()
-		if err != nil {
+		).Int(); err != nil {
 			return nil, fmt.Errorf("behavior event store: store event: %w", err)
 		}
 		return map[string]float64{}, nil
@@ -111,20 +161,16 @@ func (s *BehaviorEventStore) StoreAndAggregate(ctx context.Context, event *model
 		groups[fk] = append(groups[fk], c)
 	}
 
-	// Single pipeline: store Lua + all ZRANGEBYSCORE commands.
 	type pendingResult struct {
 		fk  fetchKey
 		cmd *goredis.StringSliceCmd
 	}
 	pipe := s.client.Pipeline()
-
-	// 1. Store event (Lua script via pipeline).
 	storeEventScript.Run(ctx, pipe, []string{storeKey},
 		score, member, cutoff, ttlSeconds,
 	)
 
-	// 2. All ZRANGEBYSCORE commands in the same pipeline.
-	var pending []pendingResult
+	pending := make([]pendingResult, 0, len(groups))
 	for fk := range groups {
 		key := s.eventKey(event.MemberID, fk.behavior)
 		cmd := pipe.ZRangeByScore(ctx, key, &goredis.ZRangeBy{
@@ -133,53 +179,30 @@ func (s *BehaviorEventStore) StoreAndAggregate(ctx context.Context, event *model
 		})
 		pending = append(pending, pendingResult{fk: fk, cmd: cmd})
 	}
-
-	// One round-trip for everything.
 	if _, err := pipe.Exec(ctx); err != nil && err != goredis.Nil {
 		return nil, fmt.Errorf("behavior event store: pipeline exec: %w", err)
 	}
 
-	// Parse and compute aggregations in Go (no Redis time).
-	entriesByGroup := make(map[fetchKey][]eventEntry)
+	results := make(map[string]float64, len(conds))
 	for _, pr := range pending {
 		members, err := pr.cmd.Result()
 		if err != nil && err != goredis.Nil {
 			return nil, fmt.Errorf("behavior event store: zrangebyscore: %w", err)
 		}
-		entries := make([]eventEntry, 0, len(members))
-		for _, m := range members {
-			idx := strings.IndexByte(m, '\x00')
-			if idx < 0 {
-				continue
-			}
-			var fields map[string]any
-			if err := json.Unmarshal([]byte(m[idx+1:]), &fields); err != nil {
-				continue
-			}
-			entries = append(entries, eventEntry{fields: fields})
-		}
-		entriesByGroup[pr.fk] = entries
-	}
-
-	results := make(map[string]float64, len(conds))
-	for fk, condList := range groups {
-		entries := entriesByGroup[fk]
-		for _, c := range condList {
-			results[c.Key] = computeAggregate(c.Aggregation, c.FieldPath, entries)
-		}
+		condList := groups[pr.fk]
+		schema := schemas[model.BehaviorType(pr.fk.behavior)]
+		computeGroupAggregates(members, condList, schema, results)
 	}
 	return results, nil
 }
 
 // BatchAggregate computes multiple aggregations from Redis sorted sets.
-// It groups conditions by (behavior, since) to minimize ZRANGEBYSCORE calls,
-// then computes aggregations in Go from the fetched entries.
-func (s *BehaviorEventStore) BatchAggregate(ctx context.Context, memberID string, conds []model.AggregateCond) (map[string]float64, error) {
+// It groups conditions by (behavior, since) to minimize ZRANGEBYSCORE calls.
+func (s *BehaviorEventStore) BatchAggregate(ctx context.Context, memberID string, conds []model.AggregateCond, schemas map[model.BehaviorType]*model.FieldSchema) (map[string]float64, error) {
 	if len(conds) == 0 {
 		return map[string]float64{}, nil
 	}
 
-	// Group conditions by (behavior, since) to reuse ZRANGEBYSCORE results.
 	type fetchKey struct {
 		behavior string
 		sinceMs  int64
@@ -190,13 +213,12 @@ func (s *BehaviorEventStore) BatchAggregate(ctx context.Context, memberID string
 		groups[fk] = append(groups[fk], c)
 	}
 
-	// Pipeline: one ZRANGEBYSCORE per unique (behavior, since).
 	type pendingResult struct {
 		fk  fetchKey
 		cmd *goredis.StringSliceCmd
 	}
 	pipe := s.client.Pipeline()
-	var pending []pendingResult
+	pending := make([]pendingResult, 0, len(groups))
 	for fk := range groups {
 		key := s.eventKey(memberID, fk.behavior)
 		cmd := pipe.ZRangeByScore(ctx, key, &goredis.ZRangeBy{
@@ -209,119 +231,107 @@ func (s *BehaviorEventStore) BatchAggregate(ctx context.Context, memberID string
 		return nil, fmt.Errorf("behavior event store: pipeline exec: %w", err)
 	}
 
-	// Parse fetched entries into field maps per group.
-	entriesByGroup := make(map[fetchKey][]eventEntry)
+	results := make(map[string]float64, len(conds))
 	for _, pr := range pending {
 		members, err := pr.cmd.Result()
 		if err != nil && err != goredis.Nil {
 			return nil, fmt.Errorf("behavior event store: zrangebyscore: %w", err)
 		}
-		entries := make([]eventEntry, 0, len(members))
-		for _, m := range members {
-			idx := strings.IndexByte(m, '\x00')
-			if idx < 0 {
-				continue // malformed entry
-			}
-			var fields map[string]any
-			if err := json.Unmarshal([]byte(m[idx+1:]), &fields); err != nil {
-				continue // skip unparseable
-			}
-			entries = append(entries, eventEntry{fields: fields})
-		}
-		entriesByGroup[pr.fk] = entries
-	}
-
-	// Compute aggregations.
-	results := make(map[string]float64, len(conds))
-	for fk, condList := range groups {
-		entries := entriesByGroup[fk]
-		for _, c := range condList {
-			results[c.Key] = computeAggregate(c.Aggregation, c.FieldPath, entries)
-		}
+		condList := groups[pr.fk]
+		schema := schemas[model.BehaviorType(pr.fk.behavior)]
+		computeGroupAggregates(members, condList, schema, results)
 	}
 	return results, nil
 }
 
-type eventEntry struct {
-	fields map[string]any
+// computeGroupAggregates walks a slice of encoded members once per condition,
+// parsing the needed field in place. Zero allocations per entry.
+func computeGroupAggregates(members []string, conds []model.AggregateCond, schema *model.FieldSchema, out map[string]float64) {
+	for _, c := range conds {
+		op := strings.ToUpper(c.Aggregation)
+		if op == "COUNT" {
+			out[c.Key] = float64(len(members))
+			continue
+		}
+		pos := schema.Position(c.FieldPath)
+		if pos < 0 {
+			out[c.Key] = 0
+			continue
+		}
+		out[c.Key] = aggregateField(op, pos, members)
+	}
 }
 
-func computeAggregate(agg string, fieldPath string, entries []eventEntry) float64 {
-	switch strings.ToUpper(agg) {
-	case "COUNT":
-		return float64(len(entries))
+func aggregateField(op string, pos int, members []string) float64 {
+	switch op {
 	case "SUM":
-		return sumField(fieldPath, entries)
+		var sum float64
+		for _, m := range members {
+			if v, ok := parseFieldAt(m, pos); ok {
+				sum += v
+			}
+		}
+		return sum
 	case "AVG":
-		if len(entries) == 0 {
+		var sum float64
+		var n int
+		for _, m := range members {
+			if v, ok := parseFieldAt(m, pos); ok {
+				sum += v
+				n++
+			}
+		}
+		if n == 0 {
 			return 0
 		}
-		return sumField(fieldPath, entries) / float64(len(entries))
+		return sum / float64(n)
 	case "MAX":
-		return maxField(fieldPath, entries)
+		result := math.Inf(-1)
+		found := false
+		for _, m := range members {
+			if v, ok := parseFieldAt(m, pos); ok {
+				found = true
+				if v > result {
+					result = v
+				}
+			}
+		}
+		if !found {
+			return 0
+		}
+		return result
 	case "MIN":
-		return minField(fieldPath, entries)
+		result := math.Inf(1)
+		found := false
+		for _, m := range members {
+			if v, ok := parseFieldAt(m, pos); ok {
+				found = true
+				if v < result {
+					result = v
+				}
+			}
+		}
+		if !found {
+			return 0
+		}
+		return result
 	default:
 		return 0
 	}
 }
 
-func sumField(fieldPath string, entries []eventEntry) float64 {
-	var total float64
-	for _, e := range entries {
-		if v, ok := extractFloat(e.fields, fieldPath); ok {
-			total += v
-		}
-	}
-	return total
-}
-
-func maxField(fieldPath string, entries []eventEntry) float64 {
-	result := math.Inf(-1)
-	found := false
-	for _, e := range entries {
-		if v, ok := extractFloat(e.fields, fieldPath); ok {
-			found = true
-			if v > result {
-				result = v
-			}
-		}
-	}
-	if !found {
-		return 0
-	}
-	return result
-}
-
-func minField(fieldPath string, entries []eventEntry) float64 {
-	result := math.Inf(1)
-	found := false
-	for _, e := range entries {
-		if v, ok := extractFloat(e.fields, fieldPath); ok {
-			found = true
-			if v < result {
-				result = v
-			}
-		}
-	}
-	if !found {
-		return 0
-	}
-	return result
-}
-
-func extractFloat(fields map[string]any, path string) (float64, bool) {
-	v, ok := fields[path]
-	if !ok {
-		return 0, false
-	}
+func toFloat64(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
 		return n, true
+	case float32:
+		return float64(n), true
 	case json.Number:
 		f, err := n.Float64()
 		return f, err == nil
 	case int:
+		return float64(n), true
+	case int32:
 		return float64(n), true
 	case int64:
 		return float64(n), true

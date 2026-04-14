@@ -168,13 +168,15 @@ func (uc *EngineUsecase) CheckEvent(ctx context.Context, req *CheckEventReq) (*C
 	conds := ruleUsecase.BuildAggregateConds(req.MemberID, allKeys, now)
 
 	// 4. Store event + batch aggregate in a single Redis pipeline round-trip.
+	// Schemas drive the zero-alloc pipe-separated encoding; the map can be
+	// nil/empty when no behavior has numeric aggregate conditions.
 	aggResults, err := uc.eventStore.StoreAndAggregate(ctx, &behaviorModel.BehaviorEvent{
 		EventID:    req.EventID,
 		MemberID:   req.MemberID,
 		Behavior:   req.Behavior,
 		Fields:     req.Fields,
 		OccurredAt: req.OccurredAt,
-	}, conds, maxWindow)
+	}, ruleSet.Schemas, conds, maxWindow)
 	if err != nil {
 		return nil, fmt.Errorf("check event: store and aggregate: %w", err)
 	}

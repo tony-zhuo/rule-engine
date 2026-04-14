@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 )
 
 // CompiledRule is a pre-compiled evaluator produced from a RuleNode AST.
@@ -72,11 +74,13 @@ type CompiledStrategy struct {
 }
 
 // CompiledRuleSet is the result of compiling all active strategies.
-// It holds the compiled strategies and the pre-computed max window
-// across all aggregate keys (for Redis event TTL/pruning).
+// It holds the compiled strategies, the pre-computed max window across
+// all aggregate keys (for Redis event TTL/pruning), and per-behavior
+// field schemas (for the zero-alloc pipe-separated event encoding).
 type CompiledRuleSet struct {
 	Strategies []CompiledStrategy
 	MaxWindow  time.Duration
+	Schemas    map[behaviorModel.BehaviorType]*behaviorModel.FieldSchema
 }
 
 // AggregateKey represents a unique aggregation query needed during rule evaluation.

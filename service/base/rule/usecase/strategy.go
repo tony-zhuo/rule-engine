@@ -160,10 +160,12 @@ func (uc *RuleStrategyUsecase) compileAndCache(ctx context.Context) (*model.Comp
 
 	allKeys := CollectUniqueAggregateKeys(strategies)
 	maxWindow := MaxWindowFromKeys(allKeys)
+	schemas := BuildBehaviorSchemas(strategies)
 
 	rs := &model.CompiledRuleSet{
 		Strategies: strategies,
 		MaxWindow:  maxWindow,
+		Schemas:    schemas,
 	}
 	uc.cached.Store(rs)
 	return rs, nil
