@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -22,9 +23,10 @@ const activeRulesCacheTTL = 60 * time.Second
 var _ model.RuleStrategyUsecaseInterface = (*RuleStrategyUsecase)(nil)
 
 type RuleStrategyUsecase struct {
-	repo    model.RuleStrategyRepoInterface
-	ruleUC  *RuleUsecase
-	rdb     *redis.Client
+	repo   model.RuleStrategyRepoInterface
+	ruleUC *RuleUsecase
+	rdb    *redis.Client
+	cached atomic.Pointer[model.CompiledRuleSet] // lock-free read on hot path
 }
 
 func NewRuleStrategyUsecase(repo model.RuleStrategyRepoInterface, ruleUC *RuleUsecase, rdb *redis.Client) *RuleStrategyUsecase {
@@ -126,29 +128,49 @@ func (uc *RuleStrategyUsecase) ListActive(ctx context.Context) ([]*model.RuleStr
 	return rules, nil
 }
 
-func (uc *RuleStrategyUsecase) ListActiveCompiled(ctx context.Context) ([]model.CompiledStrategy, error) {
+// ListActiveCompiled returns the in-memory compiled rule set.
+// On the hot path this is a single atomic pointer load (~1ns, zero alloc).
+// The cache is lazily populated on first call and invalidated on rule changes.
+func (uc *RuleStrategyUsecase) ListActiveCompiled(ctx context.Context) (*model.CompiledRuleSet, error) {
+	if rs := uc.cached.Load(); rs != nil {
+		return rs, nil
+	}
+	return uc.compileAndCache(ctx)
+}
+
+func (uc *RuleStrategyUsecase) compileAndCache(ctx context.Context) (*model.CompiledRuleSet, error) {
 	rules, err := uc.ListActive(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	compiled := make([]model.CompiledStrategy, 0, len(rules))
+	strategies := make([]model.CompiledStrategy, 0, len(rules))
 	for _, rule := range rules {
 		eval, err := Compile(rule.RuleNode)
 		if err != nil {
 			return nil, fmt.Errorf("compile rule %d (%s): %w", rule.ID, rule.Name, err)
 		}
-		compiled = append(compiled, model.CompiledStrategy{
+		strategies = append(strategies, model.CompiledStrategy{
 			ID:            rule.ID,
 			Name:          rule.Name,
 			Eval:          eval,
 			AggregateKeys: model.CollectAggregateKeys(rule.RuleNode),
 		})
 	}
-	return compiled, nil
+
+	allKeys := CollectUniqueAggregateKeys(strategies)
+	maxWindow := MaxWindowFromKeys(allKeys)
+
+	rs := &model.CompiledRuleSet{
+		Strategies: strategies,
+		MaxWindow:  maxWindow,
+	}
+	uc.cached.Store(rs)
+	return rs, nil
 }
 
 func (uc *RuleStrategyUsecase) invalidateCache(ctx context.Context) {
+	uc.cached.Store(nil) // clear in-memory cache → next call triggers recompile
 	uc.rdb.Del(ctx, activeRulesCacheKey)
 }
 

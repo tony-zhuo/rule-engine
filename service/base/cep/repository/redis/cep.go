@@ -85,20 +85,41 @@ func (s *RedisStore) ListByMember(ctx context.Context, memberID string) ([]*mode
 	if err != nil {
 		return nil, fmt.Errorf("redis list member %s: %w", memberID, err)
 	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Batch fetch all progress records in a single MGET round-trip.
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = redisProgressPrefix + id
+	}
+	values, err := s.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis mget member %s: %w", memberID, err)
+	}
 
 	now := time.Now()
 	out := make([]*model.PatternProgress, 0, len(ids))
-	for _, id := range ids {
-		p, err := s.Get(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if p == nil || now.After(p.ExpiresAt) {
-			// Stale index entry — clean up opportunistically.
-			_ = s.client.SRem(ctx, redisMemberIndex+memberID, id)
+	for i, val := range values {
+		if val == nil {
+			// Key expired or deleted — clean up index.
+			_ = s.client.SRem(ctx, redisMemberIndex+memberID, ids[i])
 			continue
 		}
-		out = append(out, p)
+		str, ok := val.(string)
+		if !ok {
+			continue
+		}
+		var p model.PatternProgress
+		if err := json.Unmarshal([]byte(str), &p); err != nil {
+			continue
+		}
+		if now.After(p.ExpiresAt) {
+			_ = s.client.SRem(ctx, redisMemberIndex+memberID, ids[i])
+			continue
+		}
+		out = append(out, &p)
 	}
 	return out, nil
 }
