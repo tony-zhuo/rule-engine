@@ -1241,7 +1241,78 @@ Phase 6 的吞吐量看起來比 Phase 3 低，但本質不同：
 
 **Phase 7 inverse scaling 調查**：原本以為是 Redis 物理極限（錯誤判斷）。pprof 實測確認真兇是 Go 端 `json.Unmarshal` 引發的 GC 風暴（15 秒 benchmark 內 allocate 492 GB，JSON 解碼佔 CPU 22%），導致 goroutine 在 Redis 連線池上排隊（98.76% 的阻塞時間）。
 
-**Phase 8 從根本解決**：把 sorted set member 從 JSON 改為 pipe-separated 格式（`"event_id|val0|val1|..."`），聚合用 `strings.Cut` + `strconv.ParseFloat` zero-alloc 解析。結果：workers-1 從 2,225 提升到 3,582 events/s（+61%），alloc_space 從 492 GB 降到 46 GB（-90%），`encoding/json` 和 `reflect.mapassign_faststr0` 在 profile 中完全消失。殘餘的 inverse scaling 來自 Redis client 的 TCP 通訊 / Redis server 序列化處理，已無法在 Go 端解決。
+**Phase 8 從根本解決**：把 sorted set member 從 JSON 改為 pipe-separated 格式（`"event_id|val0|val1|..."`），聚合用 `strings.Cut` + `strconv.ParseFloat` zero-alloc 解析。結果：workers-1 從 2,225 提升到 3,582 events/s（+61%），alloc_space 從 492 GB 降到 46 GB（-90%），`encoding/json` 和 `reflect.mapassign_faststr0` 在 profile 中完全消失。
+
+---
+
+## 環境與分析的延伸學習（Phase 8 之後的實驗）
+
+以下幾個實驗沒有留下 code 改動，但結論值得記下來，避免以後重犯或再踩同一個坑。
+
+### 1. Docker for Mac 確實有顯著網路開銷
+
+原先的 benchmark 都在 Docker for Mac 上跑。懷疑 VM 邊界是瓶頸之一，於是：
+
+```bash
+# 實驗：Docker Redis 全停，改用 brew 裝的 native Redis (同樣 localhost:6379)
+docker stop rule-engine-redis-master-1 ...
+brew services start redis
+```
+
+| Concurrency | Docker Redis | Native Redis | 變化 |
+|-------------|-------------|--------------|------|
+| 1  | 3,582 | **4,695** | +31% |
+| 4  | 1,889 | **2,373** | +26% |
+| 8  | 1,331 | **2,101** | +58% |
+| 16 | 1,214 | **1,822** | +50% |
+| 32 | 1,211 | **1,654** | +37% |
+
+高併發差異最大（+50~58%）。Docker Desktop 的 VM 邊界對「小 packet、高頻率」的 TCP 通訊有明顯開銷。**生產環境 Linux bare-metal 或同 K8s node 的場景，預估吞吐量還能再上升一個檔次。**
+
+### 2. 「單執行緒」不等於 inverse scaling
+
+Phase 7 / Phase 8 原本以為 inverse scaling 是 Redis single-threaded 的物理極限。這個推論是**錯的**。
+
+- 單執行緒的真正特徵是 **plateau**（水平高原）：無論併發 1 還是 32，吞吐量停在一個定值。
+- 而 inverse scaling（併發越高吞吐越低）必然是 **隨併發呈倍數放大的額外開銷**，例如：GC STW、網路擁塞、context switch、連線池排隊。
+
+Phase 7 的 pprof 顯示真兇是 `json.Unmarshal` 的 GC 風暴；Phase 8 解決後，殘餘 inverse scaling（native Redis 上 workers-32 還是比 workers-1 低 65%）的原因應該是**大 payload 在 32 條連線間互相競爭 kernel 的 TCP buffer**，不是 Redis server 跑不動。
+
+### 3. Lua 聚合實驗：場景對了才有用（Phase 9 實驗已回退）
+
+延續上面的假設，試過把聚合邏輯用 Lua script 推到 Redis server，讓每個 group 只回傳 N 個數字而非 N 筆 members：
+
+**失敗結果（native Redis + 已經 flatten 過的 pipe-separated payload）**：
+
+| Concurrency | Phase 8 (Go 端聚合) | Phase 9 (Lua 聚合) | 變化 |
+|-------------|-------------------|-------------------|------|
+| 1  | 4,695 | 1,005 | **-79%** |
+| 32 | 1,654 |   450 | -73% |
+
+**為什麼失敗**：
+
+| 項目 | Go 端聚合 | Lua 聚合 |
+|------|-----------|----------|
+| 2000 entries 字串解析 | Go 原生機器碼 ~200µs | Lua 解譯執行 ~800µs（慢 4 倍）|
+| Redis 單次佔用時間 | ~50µs（只跑 ZRANGEBYSCORE） | **~900µs**（ZRANGEBYSCORE + 全程解析 + 聚合）|
+| 網路傳輸 | ~50µs（60KB payload） | ~1µs |
+| 每次 CheckEvent 佔用 Redis | ~150µs | **~900µs × N groups** |
+
+換句話說：**Lua 解譯執行比 Go 原生慢 4 倍**，這在 native Redis 上把原本很便宜的網路換成很昂貴的 Redis CPU 時間，所有請求排隊等 Redis 跑 Lua，變成新的序列化點。
+
+**何時該用 Lua**（之後可能有意義的情境）：
+- Redis 跨網路（不在同 host/VPC），網路 RTT > 1ms
+- 每次 ZRANGEBYSCORE 回傳 payload > 幾百 KB
+- 或 Redis 有 CPU 閒置、Go app 端 CPU 緊張
+
+**何時不該用 Lua**（目前的場景）：
+- Redis 在 localhost、Go client 延遲極低
+- Payload 已經透過 flatten（Phase 8）壓小
+- Go 端解析已經 zero-alloc
+
+這次實驗的具體原因是**場景改變後結論也改變**。Phase 7 pprof 看到 `syscall.syscall 40%` 時，直覺是網路塞車，但實際 payload 已經很小（~60KB），syscall 的高佔比只是因為其他工作都很快（Go 聚合、GC 都降下去了）所以 I/O 相對比例變高 — 不是絕對的瓶頸。
+
+---
 
 ## 驗證方式
 
