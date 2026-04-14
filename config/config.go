@@ -13,9 +13,9 @@ import (
 type Config struct {
 	App   App               `mapstructure:"app"`
 	DB    db.DBConfig       `mapstructure:"db"`
-	Redis  redis.RedisConfig `mapstructure:"redis"`
-	Kafka  kafka.KafkaConfig `mapstructure:"kafka"`
-	Log    logs.LogConfig    `mapstructure:"log"`
+	Redis redis.RedisConfig `mapstructure:"redis"`
+	Kafka kafka.KafkaConfig `mapstructure:"kafka"`
+	Log   logs.LogConfig    `mapstructure:"log"`
 }
 
 func Load() (*Config, error) {

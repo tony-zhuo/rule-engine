@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"time"
 )
 
 type BehaviorRepoInterface interface {
@@ -19,6 +20,21 @@ type BehaviorUsecaseInterface interface {
 	Log(ctx context.Context, req *LogBehaviorReq) (*BehaviorLog, error)
 	Aggregate(ctx context.Context, cond *AggregateCond) (float64, error)
 	BatchAggregate(ctx context.Context, memberID string, conds []AggregateCond) (map[string]float64, error)
+}
+
+// BehaviorEventStoreInterface is the Redis-backed real-time event store
+// that replaces PostgreSQL on the hot path for event storage and aggregation.
+type BehaviorEventStoreInterface interface {
+	// StoreEvent adds an event to the member's behavior sorted set in Redis.
+	// maxWindow controls how long events are retained (pruning + TTL).
+	// Returns true if the event was newly inserted (not a duplicate).
+	StoreEvent(ctx context.Context, event *BehaviorEvent, maxWindow time.Duration) (bool, error)
+	// BatchAggregate computes multiple aggregations from Redis sorted sets.
+	// Returns a map keyed by AggregateCond.Key with float64 results.
+	BatchAggregate(ctx context.Context, memberID string, conds []AggregateCond) (map[string]float64, error)
+	// StoreAndAggregate combines StoreEvent + BatchAggregate into a single Redis
+	// pipeline round-trip. maxWindow controls event retention.
+	StoreAndAggregate(ctx context.Context, event *BehaviorEvent, conds []AggregateCond, maxWindow time.Duration) (map[string]float64, error)
 }
 
 // ProcessedEventRepoInterface tracks fully-processed events for dedup on retry.

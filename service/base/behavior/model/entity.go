@@ -40,3 +40,13 @@ type ProcessedEvent struct {
 }
 
 func (ProcessedEvent) TableName() string { return "processed_events" }
+
+// BehaviorEvent is the in-memory representation of a behavioral event
+// used by the Redis event store (hot path) before being written to PG asynchronously.
+type BehaviorEvent struct {
+	EventID    string         `json:"event_id"`
+	MemberID   string         `json:"member_id"`
+	Behavior   BehaviorType   `json:"behavior"`
+	Fields     map[string]any `json:"fields"`
+	OccurredAt time.Time      `json:"occurred_at"`
+}

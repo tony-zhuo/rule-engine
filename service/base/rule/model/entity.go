@@ -25,6 +25,23 @@ type TimeWindow struct {
 	Unit  string `json:"unit"` // "minutes", "hours", "days"
 }
 
+// Duration converts the TimeWindow to a time.Duration.
+func (w *TimeWindow) Duration() time.Duration {
+	if w == nil {
+		return 0
+	}
+	switch strings.ToLower(w.Unit) {
+	case "minutes":
+		return time.Duration(w.Value) * time.Minute
+	case "hours":
+		return time.Duration(w.Value) * time.Hour
+	case "days":
+		return time.Duration(w.Value) * 24 * time.Hour
+	default:
+		return time.Duration(w.Value) * time.Minute
+	}
+}
+
 type RuleStrategyStatus int
 
 const (
@@ -52,6 +69,14 @@ type CompiledStrategy struct {
 	Name          string
 	Eval          CompiledRule
 	AggregateKeys []AggregateKey
+}
+
+// CompiledRuleSet is the result of compiling all active strategies.
+// It holds the compiled strategies and the pre-computed max window
+// across all aggregate keys (for Redis event TTL/pruning).
+type CompiledRuleSet struct {
+	Strategies []CompiledStrategy
+	MaxWindow  time.Duration
 }
 
 // AggregateKey represents a unique aggregation query needed during rule evaluation.

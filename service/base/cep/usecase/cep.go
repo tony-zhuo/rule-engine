@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tony-zhuo/rule-engine/service/base/cep/model"
 	ruleModel "github.com/tony-zhuo/rule-engine/service/base/rule/model"
+	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
 )
 
 var (
@@ -20,28 +22,50 @@ var (
 
 var _ model.ProcessorInterface = (*CEPUsecase)(nil)
 
+// compiledPattern holds a CEPPattern together with its pre-compiled state conditions.
+type compiledPattern struct {
+	model.CEPPattern
+	compiledStates []ruleModel.CompiledRule // one per State, compiled at AddPattern time
+}
+
 // CEPUsecase evaluates incoming events against a set of CEP patterns.
 type CEPUsecase struct {
 	store    model.ProgressStore
-	ruleUC   ruleModel.RuleUsecaseInterface
-	patterns []model.CEPPattern
+	patterns []compiledPattern
 }
 
-func NewCEPUsecase(store model.ProgressStore, ruleUC ruleModel.RuleUsecaseInterface) *CEPUsecase {
+func NewCEPUsecase(store model.ProgressStore, _ ruleModel.RuleUsecaseInterface) *CEPUsecase {
 	_cepUsecaseOnce.Do(func() {
-		_cepUsecaseObj = &CEPUsecase{store: store, ruleUC: ruleUC}
+		_cepUsecaseObj = &CEPUsecase{store: store}
 	})
 	return _cepUsecaseObj
 }
 
 // NewCEPUsecaseWith creates a non-singleton instance (for testing with alternative connections).
-func NewCEPUsecaseWith(store model.ProgressStore, ruleUC ruleModel.RuleUsecaseInterface) *CEPUsecase {
-	return &CEPUsecase{store: store, ruleUC: ruleUC}
+func NewCEPUsecaseWith(store model.ProgressStore, _ ruleModel.RuleUsecaseInterface) *CEPUsecase {
+	return &CEPUsecase{store: store}
 }
 
-// AddPattern registers a pattern for evaluation.
+// AddPattern registers a pattern for evaluation, pre-compiling each state's condition.
 func (p *CEPUsecase) AddPattern(pattern model.CEPPattern) {
-	p.patterns = append(p.patterns, pattern)
+	compiled := make([]ruleModel.CompiledRule, len(pattern.States))
+	for i, state := range pattern.States {
+		fn, err := ruleUsecase.Compile(state.Condition)
+		if err != nil {
+			slog.Error("cep: failed to compile pattern state condition, falling back to interpreted",
+				"pattern", pattern.ID, "state", state.Name, "error", err)
+			// Fallback: wrap interpreted evaluation in a closure.
+			cond := state.Condition
+			fn = func(ctx ruleModel.EvalContext) (bool, error) {
+				return ruleUsecase.Evaluate(cond, ctx)
+			}
+		}
+		compiled[i] = fn
+	}
+	p.patterns = append(p.patterns, compiledPattern{
+		CEPPattern:     pattern,
+		compiledStates: compiled,
+	})
 }
 
 // ProcessEvent evaluates the event against all registered patterns and returns any completed matches.
@@ -78,7 +102,7 @@ func (p *CEPUsecase) ProcessEvent(ctx context.Context, event *model.Event) ([]*m
 		if len(pattern.States) == 0 {
 			continue
 		}
-		matched, err := p.matchState(event, pattern.States[0], nil)
+		matched, err := matchState(event, pattern.compiledStates[0], nil)
 		if err != nil {
 			return nil, fmt.Errorf("process event: start pattern %s state 0: %w", pattern.ID, err)
 		}
@@ -95,7 +119,7 @@ func (p *CEPUsecase) ProcessEvent(ctx context.Context, event *model.Event) ([]*m
 			CurrentStep:     1, // already matched step 0
 			Variables:       vars,
 			StartedAt:       now,
-			ExpiresAt:       patternExpiry(pattern, now),
+			ExpiresAt:       patternExpiry(pattern.CEPPattern, now),
 			ProcessedEvents: []string{event.EventID},
 		}
 
@@ -121,7 +145,7 @@ func (p *CEPUsecase) ProcessEvent(ctx context.Context, event *model.Event) ([]*m
 
 // advanceProgress checks whether the event satisfies the next expected state for a progress record.
 // Returns a MatchResult if this event completes the pattern; returns nil otherwise.
-func (p *CEPUsecase) advanceProgress(ctx context.Context, event *model.Event, pattern model.CEPPattern, progress *model.PatternProgress) (*model.MatchResult, error) {
+func (p *CEPUsecase) advanceProgress(ctx context.Context, event *model.Event, pattern compiledPattern, progress *model.PatternProgress) (*model.MatchResult, error) {
 	if progress.CurrentStep >= len(pattern.States) {
 		return nil, nil
 	}
@@ -145,7 +169,7 @@ func (p *CEPUsecase) advanceProgress(ctx context.Context, event *model.Event, pa
 		}
 	}
 
-	matched, err := p.matchState(event, state, progress.Variables)
+	matched, err := matchState(event, pattern.compiledStates[progress.CurrentStep], progress.Variables)
 	if err != nil {
 		return nil, err
 	}
@@ -182,24 +206,23 @@ func (p *CEPUsecase) advanceProgress(ctx context.Context, event *model.Event, pa
 	return nil, nil
 }
 
-// matchState evaluates the state's condition against the event, injecting any accumulated variables.
-func (p *CEPUsecase) matchState(event *model.Event, state model.PatternState, vars map[string]any) (bool, error) {
-	fields := make(map[string]any, len(event.Fields)+3)
+// matchState evaluates a compiled condition against the event, injecting any accumulated variables.
+func matchState(event *model.Event, compiled ruleModel.CompiledRule, vars map[string]any) (bool, error) {
+	fields := make(map[string]any, len(event.Fields)+2)
 	for k, v := range event.Fields {
 		fields[k] = v
 	}
 	fields["behavior"] = event.Behavior
 	fields["member_id"] = event.MemberID
 
-
 	evalCtx := ruleModel.NewMapContext(fields)
 	if len(vars) > 0 {
 		evalCtx = evalCtx.WithVariables(vars)
 	}
 
-	ok, err := p.ruleUC.Evaluate(state.Condition, evalCtx)
+	ok, err := compiled(evalCtx)
 	if err != nil {
-		return false, fmt.Errorf("match state %q: %w", state.Name, err)
+		return false, fmt.Errorf("match state: %w", err)
 	}
 	return ok, nil
 }
@@ -245,11 +268,11 @@ func windowDuration(w *ruleModel.TimeWindow) time.Duration {
 	}
 }
 
-func (p *CEPUsecase) findPattern(id string) (model.CEPPattern, bool) {
+func (p *CEPUsecase) findPattern(id string) (compiledPattern, bool) {
 	for _, pat := range p.patterns {
 		if pat.ID == id {
 			return pat, true
 		}
 	}
-	return model.CEPPattern{}, false
+	return compiledPattern{}, false
 }
