@@ -8,4 +8,3 @@ import (
 
 var EngineUsecaseSet = wire.NewSet(usecase.NewEngineUsecase)
 var RuleCtrlSet = wire.NewSet(controller.GetRuleController)
-var EventCtrlSet = wire.NewSet(controller.GetEventController)

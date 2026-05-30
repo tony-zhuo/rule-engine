@@ -7,17 +7,17 @@ import (
 	"github.com/google/wire"
 	"github.com/tony-zhuo/rule-engine/config"
 	"github.com/tony-zhuo/rule-engine/service/bff/apis/controller"
-	cepDomain "github.com/tony-zhuo/rule-engine/service/base/cep"
 	ruleDomain "github.com/tony-zhuo/rule-engine/service/base/rule"
 )
 
-func InitializeEngineController(cfg *config.Config) *controller.EngineController {
+// InitializeRuleController is the wire spec for the rule CRUD controller — the
+// only controller in cmd/apis after CheckEvent was removed (Task M).
+func InitializeRuleController(cfg *config.Config) *controller.RuleController {
 	wire.Build(
 		ConfigSet,
 		ruleDomain.MockRuleProvider,
-		cepDomain.MockCEPProvider,
 		EngineUsecaseSet,
-		EngineCtrlSet,
+		RuleCtrlSet,
 	)
-	return &controller.EngineController{}
+	return &controller.RuleController{}
 }

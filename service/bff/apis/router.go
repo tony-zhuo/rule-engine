@@ -19,7 +19,6 @@ func ApiRegister(cfg *config.Config) {
 
 	v1 := r.Group("/v1")
 	router.RuleRegister(v1, cfg)
-	router.EventRegister(v1, cfg)
 
 	srv := &http.Server{
 		Addr:    cfg.App.Addr,
