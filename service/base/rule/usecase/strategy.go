@@ -105,12 +105,15 @@ func (uc *RuleStrategyUsecase) SetStatus(ctx context.Context, id uint64, status 
 }
 
 func (uc *RuleStrategyUsecase) ListActive(ctx context.Context) ([]*model.RuleStrategy, error) {
-	// Try Redis cache first.
-	cached, err := uc.rdb.Get(ctx, activeRulesCacheKey).Bytes()
-	if err == nil {
-		var rules []*model.RuleStrategy
-		if json.Unmarshal(cached, &rules) == nil {
-			return rules, nil
+	// Try Redis cache first if configured. The in-memory engine passes nil rdb
+	// (single-process atomic.Pointer cache is enough); the legacy API path
+	// keeps Redis for cross-instance sharing.
+	if uc.rdb != nil {
+		if cached, err := uc.rdb.Get(ctx, activeRulesCacheKey).Bytes(); err == nil {
+			var rules []*model.RuleStrategy
+			if json.Unmarshal(cached, &rules) == nil {
+				return rules, nil
+			}
 		}
 	}
 
@@ -121,9 +124,11 @@ func (uc *RuleStrategyUsecase) ListActive(ctx context.Context) ([]*model.RuleStr
 		return nil, err
 	}
 
-	// Write back to Redis (best-effort).
-	if data, err := json.Marshal(rules); err == nil {
-		uc.rdb.Set(ctx, activeRulesCacheKey, data, activeRulesCacheTTL)
+	// Write back to Redis (best-effort) if configured.
+	if uc.rdb != nil {
+		if data, err := json.Marshal(rules); err == nil {
+			uc.rdb.Set(ctx, activeRulesCacheKey, data, activeRulesCacheTTL)
+		}
 	}
 	return rules, nil
 }
@@ -173,7 +178,9 @@ func (uc *RuleStrategyUsecase) compileAndCache(ctx context.Context) (*model.Comp
 
 func (uc *RuleStrategyUsecase) invalidateCache(ctx context.Context) {
 	uc.cached.Store(nil) // clear in-memory cache → next call triggers recompile
-	uc.rdb.Del(ctx, activeRulesCacheKey)
+	if uc.rdb != nil {
+		uc.rdb.Del(ctx, activeRulesCacheKey)
+	}
 }
 
 func (uc *RuleStrategyUsecase) Evaluate(node model.RuleNode, ctx model.EvalContext) (bool, error) {
