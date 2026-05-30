@@ -2,18 +2,15 @@ package wire
 
 import (
 	"github.com/google/wire"
-	goredis "github.com/redis/go-redis/v9"
 	pkgdb "github.com/tony-zhuo/rule-engine/pkg/db"
-	pkgredis "github.com/tony-zhuo/rule-engine/pkg/redis"
 	"gorm.io/gorm"
 )
 
-var ConfigSet = wire.NewSet(provideGormDB, provideRedisClient)
+// ConfigSet provides infrastructure dependencies needed by the rule CRUD path.
+// Redis was dropped in Task Q — both consumers of RuleStrategyUsecase are
+// single-process and the in-process atomic.Pointer cache is sufficient.
+var ConfigSet = wire.NewSet(provideGormDB)
 
 func provideGormDB() *gorm.DB {
 	return pkgdb.GetDB()
-}
-
-func provideRedisClient() *goredis.Client {
-	return pkgredis.GetClient()
 }

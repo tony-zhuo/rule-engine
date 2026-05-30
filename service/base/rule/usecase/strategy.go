@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/tony-zhuo/rule-engine/service/base/rule/model"
 )
 
@@ -17,28 +15,29 @@ var (
 	_ruleStrategyUCObj  *RuleStrategyUsecase
 )
 
-const activeRulesCacheKey = "rule_engine:active_rules"
-const activeRulesCacheTTL = 60 * time.Second
-
 var _ model.RuleStrategyUsecaseInterface = (*RuleStrategyUsecase)(nil)
 
+// RuleStrategyUsecase is the rule-store usecase used by both cmd/apis (rule CRUD)
+// and cmd/rule-engine-core (loads rules at startup). The Redis cache that the
+// old multi-instance API setup needed was removed in Task Q — both consumers
+// are now single-process, so the in-process atomic.Pointer (`cached`) is
+// sufficient. Dropping the rdb field also unlinks go-redis from both binaries.
 type RuleStrategyUsecase struct {
 	repo   model.RuleStrategyRepoInterface
 	ruleUC *RuleUsecase
-	rdb    *redis.Client
 	cached atomic.Pointer[model.CompiledRuleSet] // lock-free read on hot path
 }
 
-func NewRuleStrategyUsecase(repo model.RuleStrategyRepoInterface, ruleUC *RuleUsecase, rdb *redis.Client) *RuleStrategyUsecase {
+func NewRuleStrategyUsecase(repo model.RuleStrategyRepoInterface, ruleUC *RuleUsecase) *RuleStrategyUsecase {
 	_ruleStrategyUCOnce.Do(func() {
-		_ruleStrategyUCObj = &RuleStrategyUsecase{repo: repo, ruleUC: ruleUC, rdb: rdb}
+		_ruleStrategyUCObj = &RuleStrategyUsecase{repo: repo, ruleUC: ruleUC}
 	})
 	return _ruleStrategyUCObj
 }
 
-// NewRuleStrategyUsecaseWith creates a non-singleton instance (for testing with alternative connections).
-func NewRuleStrategyUsecaseWith(repo model.RuleStrategyRepoInterface, ruleUC *RuleUsecase, rdb *redis.Client) *RuleStrategyUsecase {
-	return &RuleStrategyUsecase{repo: repo, ruleUC: ruleUC, rdb: rdb}
+// NewRuleStrategyUsecaseWith creates a non-singleton instance (for tests).
+func NewRuleStrategyUsecaseWith(repo model.RuleStrategyRepoInterface, ruleUC *RuleUsecase) *RuleStrategyUsecase {
+	return &RuleStrategyUsecase{repo: repo, ruleUC: ruleUC}
 }
 
 func (uc *RuleStrategyUsecase) Get(ctx context.Context, id uint64) (*model.RuleStrategy, error) {
@@ -62,7 +61,7 @@ func (uc *RuleStrategyUsecase) Create(ctx context.Context, req *model.CreateRule
 	if err := uc.repo.Create(ctx, obj); err != nil {
 		return nil, fmt.Errorf("strategy usecase create: %w", err)
 	}
-	uc.invalidateCache(ctx)
+	uc.invalidateCache()
 	return obj, nil
 }
 
@@ -92,7 +91,7 @@ func (uc *RuleStrategyUsecase) Update(ctx context.Context, id uint64, req *model
 	if err := uc.repo.Update(ctx, id, updates); err != nil {
 		return err
 	}
-	uc.invalidateCache(ctx)
+	uc.invalidateCache()
 	return nil
 }
 
@@ -100,37 +99,17 @@ func (uc *RuleStrategyUsecase) SetStatus(ctx context.Context, id uint64, status 
 	if err := uc.repo.Update(ctx, id, map[string]any{"status": status}); err != nil {
 		return err
 	}
-	uc.invalidateCache(ctx)
+	uc.invalidateCache()
 	return nil
 }
 
+// ListActive returns active rules directly from PG. The previous Redis cache
+// layer (for cross-instance sharing) was removed in Task Q — both consumers of
+// this usecase are single-process; the atomic.Pointer cache in ListActiveCompiled
+// is sufficient.
 func (uc *RuleStrategyUsecase) ListActive(ctx context.Context) ([]*model.RuleStrategy, error) {
-	// Try Redis cache first if configured. The in-memory engine passes nil rdb
-	// (single-process atomic.Pointer cache is enough); the legacy API path
-	// keeps Redis for cross-instance sharing.
-	if uc.rdb != nil {
-		if cached, err := uc.rdb.Get(ctx, activeRulesCacheKey).Bytes(); err == nil {
-			var rules []*model.RuleStrategy
-			if json.Unmarshal(cached, &rules) == nil {
-				return rules, nil
-			}
-		}
-	}
-
-	// Cache miss — query DB.
 	s := model.RuleStrategyStatusActive
-	rules, err := uc.repo.List(ctx, &s)
-	if err != nil {
-		return nil, err
-	}
-
-	// Write back to Redis (best-effort) if configured.
-	if uc.rdb != nil {
-		if data, err := json.Marshal(rules); err == nil {
-			uc.rdb.Set(ctx, activeRulesCacheKey, data, activeRulesCacheTTL)
-		}
-	}
-	return rules, nil
+	return uc.repo.List(ctx, &s)
 }
 
 // ListActiveCompiled returns the in-memory compiled rule set.
@@ -176,11 +155,8 @@ func (uc *RuleStrategyUsecase) compileAndCache(ctx context.Context) (*model.Comp
 	return rs, nil
 }
 
-func (uc *RuleStrategyUsecase) invalidateCache(ctx context.Context) {
-	uc.cached.Store(nil) // clear in-memory cache → next call triggers recompile
-	if uc.rdb != nil {
-		uc.rdb.Del(ctx, activeRulesCacheKey)
-	}
+func (uc *RuleStrategyUsecase) invalidateCache() {
+	uc.cached.Store(nil) // next ListActiveCompiled triggers a recompile
 }
 
 func (uc *RuleStrategyUsecase) Evaluate(node model.RuleNode, ctx model.EvalContext) (bool, error) {

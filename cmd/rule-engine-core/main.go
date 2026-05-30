@@ -35,17 +35,14 @@ func main() {
 	}
 
 	// Control plane lives in PostgreSQL only — rule_strategies + cep_patterns.
-	// Redis is NOT used by the in-memory engine: the in-process atomic.Pointer
-	// cache in RuleStrategyUsecase is sufficient since each shard runs in one
-	// process (no cross-instance cache sharing to coordinate).
+	// No Redis at all: the in-process atomic.Pointer cache in
+	// RuleStrategyUsecase is sufficient for a single-process shard. The Redis
+	// cache layer was removed in Task Q together with the go-redis dependency.
 	pkgdb.Init(cfg.DB)
 	db := pkgdb.GetDB()
 
-	// Compile the active rule set; nil rdb → skip Redis cache, fall back to
-	// in-process atomic.Pointer + PG load. Same usecase serves the legacy
-	// API path with a real rdb.
 	strategyUC := ruleUsecase.NewRuleStrategyUsecase(
-		ruleDB.NewRuleStrategyRepo(db), ruleUsecase.NewRuleUsecase(), nil,
+		ruleDB.NewRuleStrategyRepo(db), ruleUsecase.NewRuleUsecase(),
 	)
 	ruleSet, err := strategyUC.ListActiveCompiled(ctx)
 	if err != nil {

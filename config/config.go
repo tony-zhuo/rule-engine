@@ -6,18 +6,15 @@ import (
 	"github.com/spf13/viper"
 	"github.com/tony-zhuo/rule-engine/pkg/db"
 	"github.com/tony-zhuo/rule-engine/pkg/logs"
-	"github.com/tony-zhuo/rule-engine/pkg/redis"
 )
 
-// Config holds the shared configuration. The legacy worker's Kafka section was
-// removed in Task N — the in-memory engine reads Kafka settings (BACKEND=kafka,
-// KAFKA_BROKERS, etc.) directly from env in cmd/rule-engine-core /
-// cmd/event-producer, not from this shared config struct.
+// Config holds the shared configuration. Kafka was removed in Task N (engine
+// reads Kafka settings from env), and Redis was removed in Task Q (rule
+// usecase no longer needs a Redis cache — in-process atomic.Pointer suffices).
 type Config struct {
-	App   App               `mapstructure:"app"`
-	DB    db.DBConfig       `mapstructure:"db"`
-	Redis redis.RedisConfig `mapstructure:"redis"`
-	Log   logs.LogConfig    `mapstructure:"log"`
+	App App            `mapstructure:"app"`
+	DB  db.DBConfig    `mapstructure:"db"`
+	Log logs.LogConfig `mapstructure:"log"`
 }
 
 func Load() (*Config, error) {

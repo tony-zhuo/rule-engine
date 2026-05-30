@@ -11,14 +11,13 @@ import (
 )
 
 // InitializeRuleController wires the rule CRUD controller. After Task M removed
-// CheckEvent, this is the only controller in cmd/apis — the behavior store, CEP
-// processor, and Kafka producer that the sync path used are no longer wired.
+// CheckEvent and Task Q removed the Redis cache, this is the only controller in
+// cmd/apis and it talks only to PostgreSQL.
 func InitializeRuleController(_ *config.Config) *controller.RuleController {
 	db := provideGormDB()
-	rdb := provideRedisClient()
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
-	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC, rdb)
+	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC)
 	engineUC := usecase.NewEngineUsecase(ruleStrategyUC)
 	return controller.GetRuleController(engineUC)
 }
