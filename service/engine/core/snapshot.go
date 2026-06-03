@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/gob"
 	"fmt"
 )
@@ -51,5 +52,27 @@ func (c *Core) Restore(data []byte) (lastSeq uint64, err error) {
 	c.State = snap.State
 	c.watermark.Store(snap.WatermarkNanos)
 	c.lastSeq.Store(snap.LastSeq)
+	c.rebuildNegativeDeadlines()
 	return snap.LastSeq, nil
+}
+
+// rebuildNegativeDeadlines reconstructs the negative-deadline heap from the
+// restored ShardState. The heap itself isn't serialized — each progress carries
+// its own NegativeDeadline, so we walk the state once after restore to rebuild
+// the priority structure.
+func (c *Core) rebuildNegativeDeadlines() {
+	c.negDeadlines = c.negDeadlines[:0]
+	for _, ms := range c.State.Members {
+		for _, p := range ms.Progresses {
+			if p.NegativeDeadline.IsZero() {
+				continue
+			}
+			c.negDeadlines = append(c.negDeadlines, negDeadlineEntry{
+				Deadline:   p.NegativeDeadline,
+				MemberID:   p.MemberID,
+				ProgressID: p.ID,
+			})
+		}
+	}
+	heap.Init(&c.negDeadlines)
 }

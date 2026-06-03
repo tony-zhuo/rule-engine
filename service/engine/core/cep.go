@@ -34,7 +34,31 @@ func (cp *compiledPattern) maxDuration() time.Duration {
 }
 
 // AddPattern registers a CEP pattern, compiling each state's condition up front.
+//
+// Negative states (IsNegative=true) are restricted to the last position in the
+// sequence — matches Flink's `notFollowedBy(...).within(...)` which is terminal.
+// Mid-sequence negatives (`A → notFollowedBy(B) → C`) need watermark-driven
+// state advancement and are deferred.
 func (c *Core) AddPattern(pattern cepModel.CEPPattern) error {
+	if len(pattern.States) == 0 {
+		return fmt.Errorf("cep: pattern %s: must have at least one state", pattern.ID)
+	}
+	if pattern.States[0].IsNegative {
+		// First state has to be positive — it's the trigger that creates a
+		// progress. A leading negative has no starting event and would never fire.
+		return fmt.Errorf("cep: pattern %s: first state %q cannot be negative (need a positive trigger)",
+			pattern.ID, pattern.States[0].Name)
+	}
+	for i, st := range pattern.States {
+		if st.IsNegative && i != len(pattern.States)-1 {
+			return fmt.Errorf("cep: pattern %s state %q: negative state must be terminal (got position %d/%d)",
+				pattern.ID, st.Name, i, len(pattern.States)-1)
+		}
+		if st.IsNegative && st.MaxWait == nil {
+			return fmt.Errorf("cep: pattern %s state %q: negative state requires MaxWait (deadline window)",
+				pattern.ID, st.Name)
+		}
+	}
 	compiled := make([]ruleModel.CompiledRule, len(pattern.States))
 	for i, st := range pattern.States {
 		fn, err := ruleUsecase.Compile(st.Condition)
@@ -116,7 +140,7 @@ func (c *Core) processCEP(ms *MemberState, event *cepModel.Event, watermark time
 			continue
 		}
 
-		ms.Progresses[id] = &cepModel.PatternProgress{
+		newProgress := &cepModel.PatternProgress{
 			ID:              id,
 			PatternID:       cp.pattern.ID,
 			MemberID:        event.MemberID,
@@ -125,6 +149,15 @@ func (c *Core) processCEP(ms *MemberState, event *cepModel.Event, watermark time
 			StartedAt:       event.OccurredAt, // event time, not wall clock — replay-correct
 			ProcessedEvents: []string{event.EventID},
 		}
+		// If the next state is negative (terminal "did NOT happen") we register
+		// the deadline with the heap; the watermark-driven drain will fire the
+		// match if no aborting event arrives in time.
+		if next := cp.pattern.States[1]; next.IsNegative {
+			deadline := newProgress.StartedAt.Add(next.MaxWait.Duration())
+			newProgress.NegativeDeadline = deadline
+			c.pushNegativeDeadline(deadline, event.MemberID, id)
+		}
+		ms.Progresses[id] = newProgress
 	}
 
 	return results
@@ -148,6 +181,19 @@ func (c *Core) advanceProgress(ms *MemberState, event *cepModel.Event, progress 
 	}
 
 	state := cp.pattern.States[progress.CurrentStep]
+
+	// Negative state: parked here waiting for the deadline to pass. The arriving
+	// event either matches the forbidden condition (→ abort, the bad thing
+	// happened) or doesn't (→ leave; watermark drain will fire the match when
+	// the deadline elapses with no abort).
+	if state.IsNegative {
+		matched, err := cepMatchState(event, cp.compiledStates[progress.CurrentStep], progress.Variables)
+		if err != nil || !matched {
+			return nil, false
+		}
+		// Forbidden event observed within the window → cancel without emitting.
+		return nil, true
+	}
 
 	// Expiry by event time: MaxWait is measured from the progress start.
 	if state.MaxWait != nil {
@@ -178,6 +224,15 @@ func (c *Core) advanceProgress(ms *MemberState, event *cepModel.Event, progress 
 			MatchedAt:   event.OccurredAt,
 		}, true // fully matched → emit + remove
 	}
+
+	// Just advanced into a (possibly negative) state — if it's negative, lock in
+	// the deadline + register it with the watermark drain heap.
+	if next := cp.pattern.States[progress.CurrentStep]; next.IsNegative {
+		deadline := progress.StartedAt.Add(next.MaxWait.Duration())
+		progress.NegativeDeadline = deadline
+		c.pushNegativeDeadline(deadline, event.MemberID, progress.ID)
+	}
+
 	return nil, false // advanced, keep waiting
 }
 

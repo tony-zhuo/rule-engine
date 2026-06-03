@@ -29,7 +29,8 @@ type Core struct {
 	allowedLateness time.Duration
 	lateSink        func(*behaviorModel.BehaviorEvent) // side output for late events (optional)
 
-	patterns []compiledPattern // registered CEP patterns
+	patterns     []compiledPattern // registered CEP patterns
+	negDeadlines negDeadlineHeap   // pending negative-pattern deadlines, ordered by deadline
 
 	lastSeq   atomic.Uint64 // last NATS stream sequence applied (checkpointed with snapshot)
 	replaying atomic.Bool   // true while rebuilding from the log — suppresses side effects
@@ -130,7 +131,17 @@ func (c *Core) ProcessEvent(event *behaviorModel.BehaviorEvent) *ProcessResult {
 		Fields:     event.Fields,
 		OccurredAt: event.OccurredAt,
 	}
-	res.MatchedPatterns = c.processCEP(ms, cepEvent, c.Watermark())
+	watermark := c.Watermark()
+	res.MatchedPatterns = c.processCEP(ms, cepEvent, watermark)
+
+	// After the watermark moved forward, fire any negative-pattern deadlines
+	// that the new watermark has passed. These can be for members other than the
+	// current event's member, which is exactly the point — a member who's gone
+	// silent still gets their negative match emitted as soon as time advances on
+	// the shard.
+	if expired := c.drainNegativeMatches(watermark); len(expired) > 0 {
+		res.MatchedPatterns = append(res.MatchedPatterns, expired...)
+	}
 
 	return res
 }

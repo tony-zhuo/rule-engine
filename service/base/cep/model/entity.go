@@ -13,10 +13,17 @@ type CEPPattern struct {
 }
 
 type PatternState struct {
-	Name           string                `json:"name"`
-	Condition      ruleModel.RuleNode    `json:"condition"`
-	MaxWait        *ruleModel.TimeWindow `json:"max_wait,omitempty"`
-	ContextBinding map[string]string     `json:"context_binding,omitempty"`
+	Name      string                `json:"name"`
+	Condition ruleModel.RuleNode    `json:"condition"`
+	MaxWait   *ruleModel.TimeWindow `json:"max_wait,omitempty"`
+	// IsNegative inverts the state's meaning: instead of "this event must occur
+	// to advance", it means "if any event matching Condition occurs within MaxWait,
+	// abort the progress (the bad thing happened); otherwise emit a match when
+	// the deadline passes (the bad thing did NOT happen)". Negative states must
+	// be terminal — see AddPattern validation in cep.go. Mirrors Flink CEP's
+	// `notFollowedBy(...).within(...)`.
+	IsNegative     bool              `json:"is_negative,omitempty"`
+	ContextBinding map[string]string `json:"context_binding,omitempty"`
 }
 
 type PatternProgress struct {
@@ -28,6 +35,11 @@ type PatternProgress struct {
 	StartedAt       time.Time      `json:"started_at"`
 	ExpiresAt       time.Time      `json:"expires_at"`
 	ProcessedEvents []string       `json:"processed_events,omitempty"`
+	// NegativeDeadline is set when CurrentStep lands on a negative state. The
+	// watermark-driven sweep (negative_queue.go) fires a match when the watermark
+	// passes this deadline without an aborting event having arrived. Zero value
+	// means "not currently in a negative state".
+	NegativeDeadline time.Time `json:"negative_deadline,omitempty"`
 }
 
 type Event struct {
