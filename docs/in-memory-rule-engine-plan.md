@@ -1471,13 +1471,77 @@ Total          | ~1 s ✓
 
 ---
 
+## Event Identity Contract
+
+引擎的所有冪等保證(下一章 §冪等性保證)都建立在「**event_id 是個合格的身份識別**」這個前提上。這個合約由 **producer 端**保證,我們的 engine 純粹是 consumer——consumer 無法驗證,只能假設;一旦違反,state 會**靜默損壞**(不是 panic、不是 error log,就是計數錯、誤判,還很難 debug)。
+
+故此合約是**外部協議**,不是實作細節——值得獨立一章,放在依賴它的 §冪等、§CEP、§Exactly-Once 之前。
+
+### 六條硬不變式
+
+| # | 規範 | 違反後果(具體場景) |
+|---|------|------------------|
+| **1.** 由 producer 在事件**產生當下**分配,綁進 payload | 中間層(API gateway / MQ broker / 我們 engine)生成的話,producer retry 時拿到新 id → `Bucket.ProcessedEventIDs` 視為兩筆 → user 過去 5 分鐘 trade 數從 4 → 5,**誤觸發風控** |
+| **2.** 跨 redelivery / replay **保持完全一致**(同一邏輯事件無論被傳幾次,id 不變) | 引擎重啟後從 NATS replay 全部 event,每筆 id 不同 → state 翻倍 → **所有 user 的 aggregation 都錯了** |
+| **3.** 不同邏輯事件 id **必須不同**(全域唯一,UUID 等級) | 兩個不同 event 被當同一個 → 第二個被 dedup 丟掉 → **該觸發的詐騙偵測沒觸發** |
+| **4.** **不**依賴 transport-side metadata(NATS seq / Kafka offset / 網路 timestamp) | 同筆事件 retry 時 transport metadata 會變,身份就崩了(同 #1) |
+| **5.** **不**用 content hash(`sha256(payload)` 不行) | 兩筆**業務上不同但欄位剛好一樣**的事件(同 user 同金額兩次點擊)會碰撞 → silent 合併成一筆 |
+| **6.** 字串型 + 合理長度(UUID 36 chars 或 ULID 26 chars) | 我們存進 `map[string]struct{}`,hot bucket 累積很多份 → 字串長度直接影響記憶體(連 §gap #26) |
+
+### 推薦實作:UUIDv7(優於 v4)
+
+```
+v7 = 48-bit unix millisecond timestamp + 74-bit randomness
+     ▲                                    ▲
+     │                                    │
+   時間排序友善                        全域唯一性
+```
+
+比 v4 好在:
+- **時間可讀**:看 id 直接知道大概什麼時候產生(audit / debug 友善)
+- **排序友善**:DB index、log grep、ProcessedEventIDs map 的 hash 分佈更均勻
+- 跟 v4 同樣 36 chars,沒有額外成本
+
+Go SDK:`github.com/google/uuid` v1.6+ 的 `uuid.NewV7()`。其他語言類似。
+
+### 我們系統內 event_id 的三個 dedup 點(都依賴此合約)
+
+```
+producer ──event_id 帶在 payload──▶ NATS / Kafka
+                                          │
+                                          ▼
+                              consumer 拿到 event.EventID
+                                          │
+                                          ▼
+                       ① Bucket.ProcessedEventIDs[id]            ← aggregation dedup
+                       ② CEPProgress.ProcessedEvents[]           ← CEP advance dedup
+                       ③ CEPProgress.ID = pattern|member|startEventID  ← 開新 progress 的去重 key
+```
+
+三個點都假設這 6 條成立。**任一條破了三個地方就會悄悄出錯**。
+
+### Operational 規範
+
+- **Producer SDK 統一 helper**:`producer.NewEvent(member, behavior, fields)` 內部自動 `uuid.NewV7()`,避免每個 producer 各自亂寫(這也是 `cmd/event-producer` 範本)
+- **Audit trail**:event_id 寫進上游系統 log,讓「user 在 10:30 那筆 trade」可以被 grep 追進 engine 的 `ProcessedEventIDs`
+- **不要 namespace**:不需要 `engine-v1-uuid` 這種前綴(無意義增加長度);id **本體**就應該全域唯一
+- **不要 recycle**:UUID 理論上永不重複,但**監控不該假設它真的不會**——可週期取樣統計 id 碰撞率當健康指標
+
+### 為什麼 consumer 端不去驗證
+
+理論上 consumer 可以做最小驗證(例如:檢查 id 是否為合法 UUID 格式),但這些是**形狀檢查**,擋不住違反語意的 case(例如 broker 生成的合法 UUID 也是 UUID)。**真正的不變式(#1 / #2 / #4)是時間維度的——consumer 在收到事件當下沒有資訊判斷**。所以這合約必須在 producer 側遵守 + 在組織層面做為協議,不是 engine 能技術性強制的。
+
+---
+
 ## 冪等性保證
 
 Replay 可能重播一段已經在 snapshot 裡的 events。所有 state 更新**必須冪等**。
 
+**前提**:event_id 滿足 §Event Identity Contract(上一章)——下面所有策略以此為地基,合約若破,冪等全失效。
+
 | 操作 | 冪等策略 |
 |------|---------|
-| Aggregation update | `BucketData.ProcessedEventIDs` set，加入前先檢查 |
+| Aggregation update | `BucketData.ProcessedEventIDs` set,加入前先檢查 |
 | CEP Progress advance | 已有 `ProcessedEvents []string` 欄位做 event_id dedup ✓ |
 | 新 Progress 建立 | `(pattern_id, member_id, start_event_id)` 為 dedup key |
 

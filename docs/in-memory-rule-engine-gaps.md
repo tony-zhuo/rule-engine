@@ -345,15 +345,20 @@ POST /debug/replay/:member_id?from=<ts>
 
 下面 #19–#26 是「拿 Notion 面試準備 §2.D 的疑問逐項對照 plan」時浮現的缺口——這些在第一輪 #1–#18 評估裡沒被點出來。多數是**改 plan 文件就能補**的設計層問題（不需要等實作）；#20、#26 連到 correctness / memory。
 
-### [ ] #19 event_id 來源與穩定性保證沒寫（🔴 冪等的地基）
+### [x] #19 event_id 來源與穩定性保證沒寫（🔴 冪等的地基）
 
-**問題**：§冪等性保證 假設 event 自帶 `event_id` 當 dedup key，但**沒寫「誰生成、怎麼保證唯一、為什麼必須跨 redelivery + replay 不變」**。若 `event_id` 是 Core 收到時才 `uuid.New()`，每次重送 / 重播都是新 id → 去重完全失效（「登入失敗 3 次」會被重複事件灌成 4 次誤判）。這是所有冪等保證的地基。
+**問題**：§冪等性保證 假設 event 自帶 `event_id` 當 dedup key,但**沒寫「誰生成、怎麼保證唯一、為什麼必須跨 redelivery + replay 不變」**。若 `event_id` 是 Core 收到時才 `uuid.New()`,每次重送 / 重播都是新 id → 去重完全失效。這是所有冪等保證的地基。
 
-**建議**：plan 明確規範——`event_id` 由 **producer 在事件產生時分配**（業務唯一鍵 / UUID），進 NATS 前就帶著，跨 redelivery / replay 不變；補一句「Core 不生成 event_id，只消費」。
+**決策**：寫入 plan ✓ 見 [plan §Event Identity Contract](./in-memory-rule-engine-plan.md)。
 
-**對應**：Notion §2.D #2。
+內容含:
+- 六條硬不變式(producer assigned / 跨重送一致 / 全域唯一 / 不靠 transport metadata / 不用 content hash / 字串型 + 合理長度)
+- 推薦 UUIDv7
+- 三個 dedup 點對此合約的依賴
+- Operational 規範(SDK helper / audit trail / 不 namespace / 不 recycle)
+- 為什麼 consumer 端**無法**驗證這些不變式
 
-**決策**：（待填）
+對應 code 註解:`service/engine/core/aggregation.go`(消費端依賴)+ `cmd/event-producer/main.go`(生產端示範),都指回 plan §Event Identity Contract。
 
 ---
 
@@ -498,6 +503,6 @@ POST /debug/replay/:member_id?from=<ts>
 - 🟡 Architectural / Learning: 3/8 完成（#2 Hot Key、#4 Observability、#12 CEP Negative Pattern ✨ commit `dcecc9b`）
 - 🟢 Nice to have: 1/5 完成（#1 採 5-milestone roadmap）
 - ❌ 不適用: 3 項（已折疊）
-- 🔬 第二輪缺口（面試準備複查）: 0/9 處理（#19–#27，全待決策；#19、#20、#27 為 🔴）
+- 🔬 第二輪缺口（面試準備複查）: 1/9 處理（#19 已寫入 plan §Event Identity Contract;#20、#27 為 🔴 仍待）
 
-**總計**：5/23 項已處理
+**總計**：6/23 項已處理

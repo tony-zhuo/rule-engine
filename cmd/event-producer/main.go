@@ -81,6 +81,13 @@ func main() {
 			return
 		case now := <-ticker.C:
 			memberID := fmt.Sprintf("user-%04d", rng.Intn(memberPool)+1)
+			// EventID is generated here at event-creation time and stays with the
+			// event for its entire lifecycle — that's the Event Identity Contract
+			// (docs/in-memory-rule-engine-plan.md §Event Identity Contract). A
+			// production producer SDK should use uuid.NewV7() (time-sortable),
+			// reuse the same ID on retry, and never let any intermediary
+			// regenerate it. uuid.NewString() (v4) is sufficient for this demo
+			// load generator.
 			event := &behaviorModel.BehaviorEvent{
 				EventID:    uuid.NewString(),
 				MemberID:   memberID,

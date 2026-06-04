@@ -48,6 +48,10 @@ func updateAggregations(
 	}
 
 	// Idempotency: the same event_id must only be counted once in this bucket.
+	// Correctness depends on eventID satisfying the Event Identity Contract —
+	// see docs/in-memory-rule-engine-plan.md §Event Identity Contract.
+	// Violating that contract (e.g., regenerating ID at the broker, recycling
+	// IDs, content-hash collisions) silently inflates or merges counts here.
 	if _, dup := bucket.ProcessedEventIDs[eventID]; dup {
 		return
 	}
