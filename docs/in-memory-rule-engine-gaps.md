@@ -165,7 +165,7 @@ single goroutine 處理 → 該 member 序列化所有 event
 
 ---
 
-### [ ] #12 CEP 設計缺 Negative Pattern
+### [x] #12 CEP 設計缺 Negative Pattern
 
 **問題**：常見需求「event A 發生後 5 分鐘內沒有 event B」（例：「下單後 5 分鐘沒付款」「登入後 1 分鐘沒驗證」）。
 
@@ -173,11 +173,22 @@ single goroutine 處理 → 該 member 序列化所有 event
 
 **Learning 價值**：CEP 完整性 + timer 機制設計是有趣的題目（Flink CEP 有完整解法可借鏡）。
 
-**建議**：
-- 要嘛**明確說「不支援 negative，已知限制」**
-- 要嘛**設計 timer 機制**（per-progress timer 註冊、watermark 推進時掃 timer）
+**決策**：採設計 timer 機制 ✓（terminal-only 子集）
 
-**決策**：（待填）
+實作於 `service/engine/core/negative_queue.go` + `cep.go`（commit `dcecc9b`）：
+
+- **語意**：`PatternState.IsNegative` flag 翻轉狀態意義——在 `MaxWait` 內若 forbidden event 出現 → abort 不 fire；deadline 過了沒出現 → fire match。對應 Flink `notFollowedBy(...).within(...)`。
+- **資料結構**：per-shard `negDeadlineHeap`（min-heap by deadline），single-writer 無鎖。Entries 可能 stale（progress 已被 abort）→ drain 時逐筆驗證 live state 才 emit。
+- **觸發**：`Core.ProcessEvent` 在 `advanceWatermark` 之後 drain heap——這會 fire **其他 member 的** negative match,正好解決「沉默 member 沒人推進 watermark 就永遠不會 fire」的問題,只要 shard 內任何 event 進來時間就會推進。
+- **Restore**：heap 不入 snapshot;從各 progress 的 `NegativeDeadline` 欄位重建（`snapshot.go` `rebuildNegativeDeadlines`）。
+- **邊界**：strict-after 語意（`watermark.After(deadline)`）——event time 剛好等於 deadline 不 fire。
+- **限制**：negative state 必須是 terminal,且 pattern 第一個 state 必須是 positive（否則沒有 trigger event 開 progress）。Mid-sequence negative（`A → notFollowedBy(B) → C`）需要 watermark-driven state 推進,deferred。
+
+**測試**（4 個,全綠）：
+- `TestCEP_NegativeFiresOnDeadline`
+- `TestCEP_NegativeAbortedByMatch`
+- `TestCEP_NegativeBoundary`
+- `TestCEP_AddPattern_RejectsMidSequenceNegative`
 
 ---
 
@@ -484,9 +495,9 @@ POST /debug/replay/:member_id?from=<ts>
 ## 進度追蹤
 
 - 🔴 Critical: 1/1 完成 ✓
-- 🟡 Architectural / Learning: 2/8 完成（#2 Hot Key、#4 Observability）
+- 🟡 Architectural / Learning: 3/8 完成（#2 Hot Key、#4 Observability、#12 CEP Negative Pattern ✨ commit `dcecc9b`）
 - 🟢 Nice to have: 1/5 完成（#1 採 5-milestone roadmap）
 - ❌ 不適用: 3 項（已折疊）
 - 🔬 第二輪缺口（面試準備複查）: 0/9 處理（#19–#27，全待決策；#19、#20、#27 為 🔴）
 
-**總計**：4/23 項已處理
+**總計**：5/23 項已處理
