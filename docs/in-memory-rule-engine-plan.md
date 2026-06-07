@@ -1545,6 +1545,53 @@ Replay 可能重播一段已經在 snapshot 裡的 events。所有 state 更新*
 | CEP Progress advance | 已有 `ProcessedEvents []string` 欄位做 event_id dedup ✓ |
 | 新 Progress 建立 | `(pattern_id, member_id, start_event_id)` 為 dedup key |
 
+### Dedup 標記的保留時間 vs Watermark 容忍範圍(無縫互補關係)
+
+「dedup 標記要存多久」一開始看起來是個邊界模糊的問題:存太短會漏抓重複,存太長吃記憶體。實際上**這個邊界已經被 watermark 機制鎖住**——只是要把兩條線畫在一起才看得到:
+
+```
+event time 軸(越右越新):
+                          ┌─ watermark            ┌─ 最新事件
+                          ▼  = max(seen) - lateness ▼
+  ──────────────●─────────●──────────────────────●──→
+                │         │
+   太舊 → drop   │ 容忍遲到 │   正常 → bucket + dedup
+   (watermark   │ 仍進 bucket│ (bucket 一定還在,maxWindow ≫ lateness)
+    在 applyEvent│          │
+    前攔下,沒  │          │
+    碰 bucket)  │          │
+                │         │
+  ◀──── maxWindow(bucket 才會過期)────────────────▶
+```
+
+**兩個機制守不同時間範圍,中間沒縫**:
+
+| 重複事件抵達時的 OccurredAt | bucket 還在嗎 | watermark 怎麼處理 | 結果 |
+|---|:---:|---|---|
+| `[L − allowedLateness, L]` 區間 | ✓ 在 | ≥ watermark,正常 path | bucket 找到 dedup 標記 → skip ✓ |
+| `[L − maxWindow + lateness, L − allowedLateness)` 區間 | ✓ 在 | < watermark,走 late-event handler 仍套用 bucket | bucket 找到 dedup 標記 → skip ✓ |
+| 比 `L − maxWindow` 還舊 | ✗ 早 prune | 早就 < watermark,直接 drop side output | 根本碰不到 bucket,**不需要 dedup 標記也安全** |
+
+**重複事件老到 bucket 會過期的程度,一定也老到被 watermark 當遲到丟掉**——它走不到 `applyEvent`,所以 dedup 標記不見也沒關係。
+
+### 隱含不變式:`allowedLateness ≤ maxWindow`
+
+上面的因果鏈成立的**前提**是 `allowedLateness ≤ maxWindow`(實務上應該 `allowedLateness ≪ maxWindow`,例如 5 秒 vs 1 小時)。若不變式被破:
+
+```
+allowedLateness > maxWindow 時的失效情境:
+  L − lateness < L − maxWindow
+  → 有一段 event time「< watermark + 容忍範圍」(watermark 不擋)
+    但「bucket 已被 prune」(dedup 標記不見)
+  → 重複事件能進來,且找不到 dedup 標記 → 被重算 → state 損壞
+```
+
+故 **config 載入時應該驗證 `allowedLateness ≤ maxWindow`**,否則拒絕啟動。等同把這個不變式從「文件提醒」升級成「程式碼強制」。
+
+### 一句話總結
+
+> Dedup 標記只需活在「事件還可能被 `applyEvent` 接受」的時間範圍內,也就是 `allowedLateness`;比這更舊的重複,watermark 在它碰到 bucket 之前就當遲到擋掉。兩個機制覆蓋範圍互補、無縫,前提 `allowedLateness ≤ maxWindow`。
+
 ---
 
 ## Side Effect 壓制

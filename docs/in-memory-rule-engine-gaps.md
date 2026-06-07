@@ -395,15 +395,18 @@ POST /debug/replay/:member_id?from=<ts>
 
 ---
 
-### [ ] #22 Dedup retention 與 allowedLateness 的關係沒接起來（🟡）
+### [x] #22 Dedup retention 與 allowedLateness 的關係沒接起來（🟡）
 
-**問題**：§冪等性保證 沒明寫「dedup 標記保留多久」（隱含 = bucket / progress 生命週期 = `maxWindow`）。更關鍵：§冪等 與 §Watermark 是**分開兩節寫的**，從沒把這條因果鏈接起來——「dedup 標記只需覆蓋 `allowedLateness` 範圍；比這更舊的重複，會被 watermark 當遲到擋在 `applyEvent` 之前，根本碰不到 bucket；所以『bucket 過期後重複又來』不會造成重算」。隱含的不變式 **`allowedLateness ≤ maxWindow`** 也沒寫明。
+**問題**：§冪等性保證 沒明寫「dedup 標記保留多久」(隱含 = bucket / progress 生命週期 = `maxWindow`)。更關鍵:§冪等 與 §Watermark 是分開兩節寫的,從沒把這條因果鏈接起來——「dedup 標記只需覆蓋 `allowedLateness` 範圍;比這更舊的重複,會被 watermark 當遲到擋在 `applyEvent` 之前,根本碰不到 bucket;所以『bucket 過期後重複又來』不會造成重算」。隱含的不變式 **`allowedLateness ≤ maxWindow`** 也沒寫明。
 
-**建議**：在 §冪等 或 §Watermark 補一段「dedup 覆蓋範圍 vs watermark 覆蓋範圍互補、無縫，前提 `allowedLateness ≪ maxWindow`」，並把三個時間區（正常 / 容忍遲到 / 太遲 drop）跟 bucket 過期線畫在一起。
+**決策**:寫入 plan ✓ 見 [plan §冪等性保證 > Dedup 標記的保留時間 vs Watermark 容忍範圍](./in-memory-rule-engine-plan.md)。
 
-**對應**：Notion §2.D #2 + #4 的交互。
-
-**決策**：（待填）
+內容含:
+- 三個時間區的視覺對照(太舊 drop / 容忍遲到 / 正常)跟 bucket 過期線畫在一起
+- **三種重複事件抵達時的處置表**(正常 / 容忍遲到 / 太舊),三條都導向「不被重算」
+- 明確列出不變式 `allowedLateness ≤ maxWindow`,違反時的失效情境
+- 建議升級成 **config 載入時強制驗證**(從文件提醒 → 程式碼強制)
+- 一句話總結可直接背
 
 ---
 
@@ -503,6 +506,6 @@ POST /debug/replay/:member_id?from=<ts>
 - 🟡 Architectural / Learning: 3/8 完成（#2 Hot Key、#4 Observability、#12 CEP Negative Pattern ✨ commit `dcecc9b`）
 - 🟢 Nice to have: 1/5 完成（#1 採 5-milestone roadmap）
 - ❌ 不適用: 3 項（已折疊）
-- 🔬 第二輪缺口（面試準備複查）: 1/9 處理（#19 已寫入 plan §Event Identity Contract;#20、#27 為 🔴 仍待）
+- 🔬 第二輪缺口（面試準備複查）: 2/9 處理（#19 Event Identity Contract、#22 Dedup retention vs allowedLateness;#20、#27 為 🔴 仍待）
 
-**總計**：6/23 項已處理
+**總計**：7/23 項已處理
