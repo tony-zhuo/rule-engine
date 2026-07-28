@@ -18,10 +18,9 @@ var (
 var _ model.RuleStrategyUsecaseInterface = (*RuleStrategyUsecase)(nil)
 
 // RuleStrategyUsecase is the rule-store usecase used by both cmd/apis (rule CRUD)
-// and cmd/rule-engine-core (loads rules at startup). The Redis cache that the
-// old multi-instance API setup needed was removed in Task Q — both consumers
-// are now single-process, so the in-process atomic.Pointer (`cached`) is
-// sufficient. Dropping the rdb field also unlinks go-redis from both binaries.
+// and cmd/rule-engine-core (loads rules at startup). Both consumers are
+// single-process, so the in-process atomic.Pointer (`cached`) is the whole
+// caching story — no external cache participates.
 type RuleStrategyUsecase struct {
 	repo   model.RuleStrategyRepoInterface
 	ruleUC *RuleUsecase
@@ -103,10 +102,8 @@ func (uc *RuleStrategyUsecase) SetStatus(ctx context.Context, id uint64, status 
 	return nil
 }
 
-// ListActive returns active rules directly from PG. The previous Redis cache
-// layer (for cross-instance sharing) was removed in Task Q — both consumers of
-// this usecase are single-process; the atomic.Pointer cache in ListActiveCompiled
-// is sufficient.
+// ListActive returns active rules directly from PG, uncached — callers that need
+// the hot path use ListActiveCompiled and its atomic.Pointer cache instead.
 func (uc *RuleStrategyUsecase) ListActive(ctx context.Context) ([]*model.RuleStrategy, error) {
 	s := model.RuleStrategyStatusActive
 	return uc.repo.List(ctx, &s)
@@ -144,12 +141,10 @@ func (uc *RuleStrategyUsecase) compileAndCache(ctx context.Context) (*model.Comp
 
 	allKeys := CollectUniqueAggregateKeys(strategies)
 	maxWindow := MaxWindowFromKeys(allKeys)
-	schemas := BuildBehaviorSchemas(strategies)
 
 	rs := &model.CompiledRuleSet{
 		Strategies: strategies,
 		MaxWindow:  maxWindow,
-		Schemas:    schemas,
 	}
 	uc.cached.Store(rs)
 	return rs, nil

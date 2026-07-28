@@ -15,12 +15,9 @@ type MatchedRule struct {
 }
 
 // evaluateRules runs every active compiled rule against the event, resolving
-// aggregate fields from the member's in-memory buckets instead of Redis.
-//
-// The compiled rules, the EvalContext interface, and PreloadedEvalContext are
-// reused unchanged from the existing engine — only the source of aggregate
-// values changes (Redis StoreAndAggregate → computeBucketAggregation). This is
-// the payoff of the AST engine being decoupled from storage.
+// aggregate fields from the member's in-memory buckets. The AST compiler is
+// decoupled from storage — it only asks EvalContext for a field's value — which
+// is what lets the whole hot path stay free of external I/O.
 //
 // Window aggregations are anchored at event.OccurredAt (event time), not
 // time.Now(), so results are identical whether processing live or replaying.

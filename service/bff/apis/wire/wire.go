@@ -11,12 +11,12 @@ import (
 )
 
 // InitializeRuleController is the wire spec for the rule CRUD controller — the
-// only controller in cmd/apis after CheckEvent was removed (Task M).
+// only controller in cmd/apis.
 func InitializeRuleController(cfg *config.Config) *controller.RuleController {
 	wire.Build(
 		ConfigSet,
 		ruleDomain.MockRuleProvider,
-		EngineUsecaseSet,
+		RuleAdminUsecaseSet,
 		RuleCtrlSet,
 	)
 	return &controller.RuleController{}

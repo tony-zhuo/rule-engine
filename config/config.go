@@ -8,9 +8,9 @@ import (
 	"github.com/tony-zhuo/rule-engine/pkg/logs"
 )
 
-// Config holds the shared configuration. Kafka was removed in Task N (engine
-// reads Kafka settings from env), and Redis was removed in Task Q (rule
-// usecase no longer needs a Redis cache — in-process atomic.Pointer suffices).
+// Config is the file-based configuration, used by cmd/apis. The engine binaries
+// (cmd/rule-engine-core, cmd/event-producer) are configured through environment
+// variables instead, so their MQ settings deliberately do not appear here.
 type Config struct {
 	App App            `mapstructure:"app"`
 	DB  db.DBConfig    `mapstructure:"db"`

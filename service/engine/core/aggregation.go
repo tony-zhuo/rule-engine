@@ -96,7 +96,7 @@ func numericFieldsOf(fields map[string]any) map[string]float64 {
 }
 
 // parseAggregateField splits "Behavior:AGG:field" (or "Behavior:AGG" for COUNT)
-// into its parts, matching the format used by the rule compiler and Redis store.
+// into its parts, matching the format the rule compiler emits.
 func parseAggregateField(field string) (behavior behaviorModel.BehaviorType, agg, fieldPath string) {
 	parts := strings.SplitN(field, ":", 3)
 	if len(parts) < 2 {
@@ -111,9 +111,8 @@ func parseAggregateField(field string) (behavior behaviorModel.BehaviorType, agg
 }
 
 // computeBucketAggregation answers one aggregate key (e.g. "Trade:SUM:amount"
-// over 5 minutes) from the member's in-memory buckets — the read path that
-// replaces a Redis ZRANGEBYSCORE + parse. It sums the buckets whose start falls
-// within [now - window, now].
+// over 5 minutes) from the member's in-memory buckets, folding those whose start
+// falls within [now - window, now].
 func computeBucketAggregation(ms *MemberState, key ruleModel.AggregateKey, now time.Time) float64 {
 	behavior, agg, fieldPath := parseAggregateField(key.Field)
 

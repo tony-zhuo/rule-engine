@@ -57,6 +57,7 @@ services:
       timeout: 10s
       retries: 5
 
+  # Control plane: rule + CEP pattern CRUD. The engine reads what this writes.
   api:
     build:
       context: .
@@ -71,6 +72,28 @@ services:
       postgres:
         condition: service_healthy
 
+  # Data plane: one engine shard consuming from NATS. Scale by running more
+  # copies with distinct SHARD_IDs.
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/rule-engine-core"]
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - engine_snapshots:/data/snapshots
+    environment:
+      DB_HOST: postgres
+      SHARD_ID: "0"
+      NATS_URL: "nats://nats:4222"
+      SNAPSHOT_DIR: /data/snapshots
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   nats_data:
+  engine_snapshots:

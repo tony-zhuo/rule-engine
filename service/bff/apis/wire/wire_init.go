@@ -7,8 +7,7 @@ import (
 )
 
 // ConfigSet provides infrastructure dependencies needed by the rule CRUD path.
-// Redis was dropped in Task Q — both consumers of RuleStrategyUsecase are
-// single-process and the in-process atomic.Pointer cache is sufficient.
+// PostgreSQL is the only backing store: the rule cache is in-process.
 var ConfigSet = wire.NewSet(provideGormDB)
 
 func provideGormDB() *gorm.DB {

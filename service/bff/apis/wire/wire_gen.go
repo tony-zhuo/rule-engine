@@ -10,14 +10,13 @@ import (
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
 )
 
-// InitializeRuleController wires the rule CRUD controller. After Task M removed
-// CheckEvent and Task Q removed the Redis cache, this is the only controller in
-// cmd/apis and it talks only to PostgreSQL.
+// InitializeRuleController wires the rule CRUD controller — the only controller
+// in cmd/apis, talking only to PostgreSQL.
 func InitializeRuleController(_ *config.Config) *controller.RuleController {
 	db := provideGormDB()
 	ruleRepo := ruleDB.NewRuleStrategyRepo(db)
 	ruleUC := ruleUsecase.NewRuleUsecase()
 	ruleStrategyUC := ruleUsecase.NewRuleStrategyUsecase(ruleRepo, ruleUC)
-	engineUC := usecase.NewEngineUsecase(ruleStrategyUC)
-	return controller.GetRuleController(engineUC)
+	ruleAdminUC := usecase.NewRuleAdminUsecase(ruleStrategyUC)
+	return controller.GetRuleController(ruleAdminUC)
 }

@@ -51,7 +51,7 @@ func newMemberState(memberID string) *MemberState {
 
 // BehaviorAgg holds the time-bucketed aggregations for one behavior of one
 // member. Bucketing pre-aggregates events so a window query sums a handful of
-// buckets instead of scanning every raw event (the Redis sorted-set approach).
+// buckets instead of scanning every raw event in the window.
 type BehaviorAgg struct {
 	Buckets map[int64]*BucketData // aligned bucket start (unix secs) → data
 }

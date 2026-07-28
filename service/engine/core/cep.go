@@ -89,8 +89,8 @@ func deterministicProgressID(patternID, memberID, startEventID string) string {
 }
 
 // processCEP advances all of the member's in-flight progresses against the event
-// and tries to start new ones. Returns any patterns that completed. All state is
-// the member's in-memory Progresses map — no Redis round-trips.
+// and tries to start new ones. Returns any patterns that completed. All state
+// lives in the member's in-memory Progresses map, so this makes no I/O calls.
 func (c *Core) processCEP(ms *MemberState, event *cepModel.Event, watermark time.Time) []*cepModel.MatchResult {
 	// Drop this member's progresses that can no longer complete (pure-timeout
 	// case: no event ever arrived to advance or expire them). Correctness does

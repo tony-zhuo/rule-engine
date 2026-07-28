@@ -6,5 +6,5 @@ import (
 	"github.com/tony-zhuo/rule-engine/service/bff/apis/usecase"
 )
 
-var EngineUsecaseSet = wire.NewSet(usecase.NewEngineUsecase)
+var RuleAdminUsecaseSet = wire.NewSet(usecase.NewRuleAdminUsecase)
 var RuleCtrlSet = wire.NewSet(controller.GetRuleController)

@@ -34,10 +34,9 @@ func main() {
 		log.Fatal("load config: ", err)
 	}
 
-	// Control plane lives in PostgreSQL only — rule_strategies + cep_patterns.
-	// No Redis at all: the in-process atomic.Pointer cache in
-	// RuleStrategyUsecase is sufficient for a single-process shard. The Redis
-	// cache layer was removed in Task Q together with the go-redis dependency.
+	// Control plane lives in PostgreSQL only — rule_strategies + cep_patterns,
+	// read once at startup. The shard needs no other external store: its event
+	// state is in memory and the rule cache is an in-process atomic.Pointer.
 	pkgdb.Init(cfg.DB)
 	db := pkgdb.GetDB()
 

@@ -16,10 +16,10 @@ var (
 )
 
 type RuleController struct {
-	uc usecase.EngineUsecaseInterface
+	uc usecase.RuleAdminUsecaseInterface
 }
 
-func GetRuleController(uc usecase.EngineUsecaseInterface) *RuleController {
+func GetRuleController(uc usecase.RuleAdminUsecaseInterface) *RuleController {
 	_ruleCtrlOnce.Do(func() {
 		_ruleCtrlObj = &RuleController{uc: uc}
 	})

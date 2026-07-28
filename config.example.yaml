@@ -1,8 +1,11 @@
+# Config for cmd/apis (the rule-admin control plane).
+#
+# cmd/rule-engine-core and cmd/event-producer are configured entirely through
+# environment variables instead — see the README for the full list
+# (SHARD_ID, NATS_URL, SNAPSHOT_DIR, BACKEND, KAFKA_BROKERS, ...).
+
 app:
   addr: ":8080"
-
-worker:
-  pool_size: 4
 
 db:
   host: "localhost"
@@ -15,19 +18,6 @@ db:
   max_open_conns: 25
   max_idle_conns: 10
   conn_max_lifetime_sec: 300
-
-redis:
-  master_name: "mymaster"
-  sentinel_addrs: "localhost:26379"
-  password: ""
-  db: 0
-
-kafka:
-  brokers: "localhost:9092"
-  consumer_group: "rule-engine-worker"
-  topics:
-    events: "rule-engine-events"
-    results: "rule-engine-results"
 
 log:
   level: "info"
