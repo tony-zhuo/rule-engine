@@ -14,9 +14,7 @@ import (
 	"log"
 	"log/slog"
 	"math/rand"
-	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +25,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 
+	"github.com/tony-zhuo/rule-engine/pkg/env"
 	behaviorModel "github.com/tony-zhuo/rule-engine/service/base/behavior/model"
 	"github.com/tony-zhuo/rule-engine/service/engine/core"
 )
@@ -36,13 +35,13 @@ func main() {
 	defer cancel()
 
 	// Shared config (both backends).
-	backend := envStr("BACKEND", "nats")
-	topic := envStr("TOPIC", "rule-events") // also used as NATS stream name
-	numShards := envInt("NUM_SHARDS", 1)
-	rate := envInt("RATE", 100) // events/s
-	count := envInt("COUNT", 0) // total events; 0 = run until cancelled
-	memberPool := envInt("MEMBER_POOL", 100)
-	behavior := envStr("BEHAVIOR", string(behaviorModel.BehaviorCryptoWithdraw))
+	backend := env.Str("BACKEND", "nats")
+	topic := env.Str("TOPIC", "rule-events") // also used as NATS stream name
+	numShards := env.Int("NUM_SHARDS", 1)
+	rate := env.Int("RATE", 100) // events/s
+	count := env.Int("COUNT", 0) // total events; 0 = run until cancelled
+	memberPool := env.Int("MEMBER_POOL", 100)
+	behavior := env.Str("BEHAVIOR", string(behaviorModel.BehaviorCryptoWithdraw))
 
 	var (
 		producer core.EventProducer
@@ -112,8 +111,8 @@ func main() {
 // setupNATSProducer connects to NATS, ensures the stream exists, and returns a
 // producer + shutdown closure for the NATS connection.
 func setupNATSProducer(ctx context.Context, stream string, numShards int) (core.EventProducer, func()) {
-	natsURL := envStr("NATS_URL", nats.DefaultURL)
-	subjectPrefix := envStr("SUBJECT_PREFIX", "rule.events")
+	natsURL := env.Str("NATS_URL", nats.DefaultURL)
+	subjectPrefix := env.Str("SUBJECT_PREFIX", "rule.events")
 
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
@@ -141,7 +140,7 @@ func setupNATSProducer(ctx context.Context, stream string, numShards int) (core.
 // setupKafkaProducer connects to Kafka, best-effort creates the topic with
 // NumShards partitions, and returns a producer + shutdown closure.
 func setupKafkaProducer(ctx context.Context, topic string, numShards int) (core.EventProducer, func()) {
-	brokers := strings.Split(envStr("KAFKA_BROKERS", "localhost:9092"), ",")
+	brokers := strings.Split(env.Str("KAFKA_BROKERS", "localhost:9092"), ",")
 	client, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
 	if err != nil {
 		log.Fatal("kafka client: ", err)
@@ -161,20 +160,4 @@ func setupKafkaProducer(ctx context.Context, topic string, numShards int) (core.
 			NumShards: numShards,
 		}),
 		func() { client.Close() }
-}
-
-func envStr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
 }

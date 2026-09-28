@@ -80,11 +80,15 @@ func TestKafka_EndToEnd(t *testing.T) {
 	}
 	defer consumerClient.Close()
 
+	// All three events predate the consumer → replayed → OnProcessed must stay
+	// silent (the Kafka mirror of TestOnProcessed_SkippedDuringReplay).
+	lc := &latencyCollector{}
 	core := NewCore(0, buildWithdrawRuleSet(t))
 	consumer := NewKafkaConsumer(core, consumerClient, KafkaConfig{
 		Topic:          topic,
 		Partition:      0,
 		MaxPollRecords: 100,
+		OnProcessed:    lc.add,
 	})
 
 	runCtx, cancelRun := context.WithCancel(context.Background())
@@ -110,6 +114,9 @@ func TestKafka_EndToEnd(t *testing.T) {
 	}
 	if totalCount != 3 || totalSum != 12000 {
 		t.Fatalf("got count=%d sum=%v, want count=3 sum=12000", totalCount, totalSum)
+	}
+	if n := len(lc.snapshot()); n != 0 {
+		t.Fatalf("got %d OnProcessed calls for replayed events, want 0", n)
 	}
 }
 

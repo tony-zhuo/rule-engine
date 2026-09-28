@@ -19,6 +19,10 @@ type KafkaConfig struct {
 	MaxPollRecords   int           // backpressure: cap on records per PollFetches
 	SnapshotPath     string        // file to snapshot to ("" disables snapshots)
 	SnapshotInterval time.Duration // how often to snapshot inline in the main loop
+
+	// OnProcessed mirrors NATSConfig.OnProcessed: end-to-end latency per live
+	// event, silent during replay, nil = no overhead.
+	OnProcessed func(latency time.Duration)
 }
 
 // KafkaConsumer is the franz-go pull-consumer backend for the engine. Like the
@@ -47,7 +51,11 @@ var _ EventConsumer = (*KafkaConsumer)(nil)
 
 // NewKafkaConsumer wires a Core to a franz-go client with this shard's config.
 func NewKafkaConsumer(core *Core, client *kgo.Client, cfg KafkaConfig) *KafkaConsumer {
-	return &KafkaConsumer{core: core, client: client, cfg: cfg}
+	return &KafkaConsumer{
+		core:   core,
+		client: client,
+		cfg:    cfg,
+	}
 }
 
 // Run drives the Core from Kafka. Mirrors NATSConsumer.Run step for step so the
@@ -137,6 +145,9 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 				return
 			}
 			core.ProcessEvent(event)
+			if cfg.OnProcessed != nil && !replaying {
+				cfg.OnProcessed(time.Since(event.OccurredAt))
+			}
 			core.lastSeq.Store(uint64(r.Offset))
 			if replaying && r.Offset >= targetOffset {
 				core.EndReplay()
