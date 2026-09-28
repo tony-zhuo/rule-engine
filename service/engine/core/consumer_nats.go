@@ -19,6 +19,12 @@ type NATSConfig struct {
 	MaxAckPending    int           // backpressure: max unacked messages in flight
 	SnapshotPath     string        // file to snapshot to ("" disables snapshots)
 	SnapshotInterval time.Duration // how often to snapshot inline in the main loop
+
+	// OnProcessed, if set, fires after each live event's ProcessEvent with the
+	// end-to-end latency (now - OccurredAt). Replayed events never fire it:
+	// their OccurredAt is historical, so the delta is replay lag, not latency.
+	// Benchmark instrumentation hook; nil (the default) adds no overhead.
+	OnProcessed func(latency time.Duration)
 }
 
 // NATSConsumer is the JetStream pull-consumer backend for the engine. It owns
@@ -124,6 +130,9 @@ func (c *NATSConsumer) Run(ctx context.Context) error {
 		}
 
 		core.ProcessEvent(event)
+		if cfg.OnProcessed != nil && !replaying {
+			cfg.OnProcessed(time.Since(event.OccurredAt))
+		}
 
 		if err := msg.Ack(); err != nil {
 			return fmt.Errorf("nats: ack: %w", err)

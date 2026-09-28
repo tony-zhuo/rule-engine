@@ -1,6 +1,7 @@
 // Command rule-engine-core runs one shard of the in-memory, event-sourced rule
-// engine: it consumes behavioral events from NATS JetStream, evaluates rules and
-// CEP patterns entirely in memory, and snapshots periodically for fast recovery.
+// engine: it consumes behavioral events from NATS JetStream or Kafka (BACKEND
+// env, default nats), evaluates rules and CEP patterns entirely in memory, and
+// snapshots periodically for fast recovery.
 package main
 
 import (
@@ -8,17 +9,18 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"os"
 	"os/signal"
-	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/tony-zhuo/rule-engine/config"
 	pkgdb "github.com/tony-zhuo/rule-engine/pkg/db"
+	"github.com/tony-zhuo/rule-engine/pkg/env"
 	cepDB "github.com/tony-zhuo/rule-engine/service/base/cep/repository/db"
 	ruleDB "github.com/tony-zhuo/rule-engine/service/base/rule/repository/db"
 	ruleUsecase "github.com/tony-zhuo/rule-engine/service/base/rule/usecase"
@@ -55,9 +57,13 @@ func main() {
 	}
 
 	// Engine-specific settings (per-shard) come from the environment.
-	shardID := envInt("SHARD_ID", 0)
-	natsURL := envStr("NATS_URL", nats.DefaultURL)
-	snapshotDir := envStr("SNAPSHOT_DIR", "")
+	backend := env.Str("BACKEND", "nats")
+	shardID := env.Int("SHARD_ID", 0)
+	snapshotDir := env.Str("SNAPSHOT_DIR", "")
+	snapshotPath := ""
+	if snapshotDir != "" {
+		snapshotPath = fmt.Sprintf("%s/shard_%d.snap", snapshotDir, shardID)
+	}
 
 	// Build this shard's engine and register its CEP patterns.
 	engine := core.NewCore(shardID, ruleSet)
@@ -67,51 +73,73 @@ func main() {
 		}
 	}
 
-	// Connect to NATS JetStream.
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		log.Fatal("connect nats: ", err)
+	var consumer core.EventConsumer
+	var shutdown func()
+	switch backend {
+	case "nats":
+		consumer, shutdown = setupNATSConsumer(engine, shardID, snapshotPath)
+	case "kafka":
+		consumer, shutdown = setupKafkaConsumer(engine, shardID, snapshotPath)
+	default:
+		log.Fatalf("unknown BACKEND=%q (want: nats|kafka)", backend)
 	}
-	defer nc.Close()
-	js, err := jetstream.New(nc)
-	if err != nil {
-		log.Fatal("jetstream: ", err)
-	}
-
-	natsCfg := core.NATSConfig{
-		StreamName:       "rule-events",
-		Subjects:         []string{"rule.events.>"},
-		FilterSubject:    fmt.Sprintf("rule.events.%d.>", shardID),
-		MaxAckPending:    1000,
-		SnapshotInterval: 60 * time.Second,
-	}
-	if snapshotDir != "" {
-		natsCfg.SnapshotPath = fmt.Sprintf("%s/shard_%d.snap", snapshotDir, shardID)
-	}
+	defer shutdown()
 
 	slog.Info("rule-engine-core starting",
-		"shard", shardID, "backend", "nats", "nats", natsURL,
+		"shard", shardID, "backend", backend,
 		"rules", len(ruleSet.Strategies), "patterns", len(patterns))
 
-	consumer := core.NewNATSConsumer(engine, js, natsCfg)
 	if err := consumer.Run(ctx); err != nil {
 		log.Fatal("engine run: ", err)
 	}
 	slog.Info("rule-engine-core stopped", "shard", shardID)
 }
 
-func envStr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// setupNATSConsumer connects to NATS JetStream and returns this shard's
+// consumer + shutdown closure for the connection.
+func setupNATSConsumer(engine *core.Core, shardID int, snapshotPath string) (core.EventConsumer, func()) {
+	natsURL := env.Str("NATS_URL", nats.DefaultURL)
+
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		log.Fatal("connect nats: ", err)
 	}
-	return def
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		log.Fatal("jetstream: ", err)
+	}
+
+	return core.NewNATSConsumer(engine, js, core.NATSConfig{
+			StreamName:       "rule-events",
+			Subjects:         []string{"rule.events.>"},
+			FilterSubject:    fmt.Sprintf("rule.events.%d.>", shardID),
+			MaxAckPending:    1000,
+			SnapshotPath:     snapshotPath,
+			SnapshotInterval: 60 * time.Second,
+		}),
+		func() { nc.Close() }
 }
 
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+// setupKafkaConsumer builds a franz-go client for this shard and returns the
+// consumer + shutdown closure. No ConsumerGroup and no ConsumePartitions here:
+// KafkaConsumer.Run pins the partition + start offset itself once the snapshot
+// is restored (the engine owns the source offset, not the broker cursor).
+func setupKafkaConsumer(engine *core.Core, shardID int, snapshotPath string) (core.EventConsumer, func()) {
+	brokers := strings.Split(env.Str("KAFKA_BROKERS", "localhost:9092"), ",")
+	topic := env.Str("TOPIC", "rule-events")
+
+	client, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	if err != nil {
+		log.Fatal("kafka client: ", err)
 	}
-	return def
+
+	return core.NewKafkaConsumer(engine, client, core.KafkaConfig{
+			Topic:            topic,
+			Partition:        int32(shardID),
+			MaxPollRecords:   1000,
+			SnapshotPath:     snapshotPath,
+			SnapshotInterval: 60 * time.Second,
+		}),
+		func() { client.Close() }
 }
