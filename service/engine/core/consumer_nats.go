@@ -18,7 +18,7 @@ type NATSConfig struct {
 	FilterSubject    string        // this shard's filter (e.g. "rule.events.0.>")
 	MaxAckPending    int           // backpressure: max unacked messages in flight
 	SnapshotPath     string        // file to snapshot to ("" disables snapshots)
-	SnapshotInterval time.Duration // how often to snapshot inline in the main loop
+	SnapshotInterval time.Duration // how often to start a background snapshot
 
 	// OnProcessed, if set, fires after each live event's ProcessEvent with the
 	// end-to-end latency (now - OccurredAt). Replayed events never fire it:
@@ -105,17 +105,15 @@ func (c *NATSConsumer) Run(ctx context.Context) error {
 	go func() { <-ctx.Done(); iter.Stop() }()
 
 	// 4. Main loop: pull → process → ack. Single goroutine = single writer.
-	lastSnapshot := time.Now()
+	snapshots := newAsyncSnapshotter(cfg.SnapshotPath, cfg.SnapshotInterval)
 	for {
 		msg, err := iter.Next()
 		if err != nil {
 			if errors.Is(err, jetstream.ErrMsgIteratorClosed) || ctx.Err() != nil {
 				// Final snapshot on clean shutdown so the next start has a fresh
 				// checkpoint to resume from.
-				if cfg.SnapshotPath != "" {
-					if serr := snapshotToFile(core, cfg.SnapshotPath); serr != nil {
-						slog.Error("final snapshot failed", "shard", core.ShardID, "error", serr)
-					}
+				if serr := snapshots.drain(core); serr != nil {
+					slog.Error("final snapshot failed", "shard", core.ShardID, "error", serr)
 				}
 				return nil
 			}
@@ -147,12 +145,8 @@ func (c *NATSConsumer) Run(ctx context.Context) error {
 			}
 		}
 
-		// 5. Inline snapshot (single-writer; gap #20 — async would need COW).
-		if cfg.SnapshotPath != "" && cfg.SnapshotInterval > 0 && time.Since(lastSnapshot) >= cfg.SnapshotInterval {
-			if serr := snapshotToFile(core, cfg.SnapshotPath); serr != nil {
-				slog.Error("snapshot failed", "shard", core.ShardID, "error", serr)
-			}
-			lastSnapshot = time.Now()
-		}
+		// 5. Periodic snapshot: freeze here, encode + write in the background
+		//    (copy-on-write keeps the frozen view consistent, gap #20).
+		snapshots.tick(core)
 	}
 }

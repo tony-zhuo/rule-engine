@@ -74,7 +74,7 @@ func TestCEP_FraudSequence(t *testing.T) {
 		}
 	}
 	// The completed progress (started by e0) is removed on match.
-	progresses := c.State.Members["u1"].Progresses
+	progresses := c.State.member("u1").Progresses
 	if _, exists := progresses["fraud|u1|e0"]; exists {
 		t.Fatal("completed progress fraud|u1|e0 should have been removed")
 	}
@@ -193,7 +193,7 @@ func TestCEP_NegativeFiresOnDeadline(t *testing.T) {
 	if c.negDeadlines.Len() != 0 {
 		t.Fatalf("deadline heap should be drained, got %d", c.negDeadlines.Len())
 	}
-	if _, exists := c.State.Members["alice"].Progresses["missed_verify|alice|e0"]; exists {
+	if _, exists := c.State.member("alice").Progresses["missed_verify|alice|e0"]; exists {
 		t.Fatal("progress should be removed after firing")
 	}
 }
@@ -209,7 +209,7 @@ func TestCEP_NegativeAbortedByMatch(t *testing.T) {
 	if res := c.ProcessEvent(behaviorEvent("e1", "alice", "verify", base.Add(2*time.Minute))); len(res.MatchedPatterns) != 0 {
 		t.Fatalf("verify within window aborts, must not emit a match, got %v", res.MatchedPatterns)
 	}
-	if _, exists := c.State.Members["alice"].Progresses["missed_verify|alice|e0"]; exists {
+	if _, exists := c.State.member("alice").Progresses["missed_verify|alice|e0"]; exists {
 		t.Fatal("progress should be deleted after the aborting event")
 	}
 	// Heap entry is still there (stale), but draining past the deadline must not fire.

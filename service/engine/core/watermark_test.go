@@ -87,7 +87,7 @@ func TestProcessEvent_LateEvent_SideOutput(t *testing.T) {
 		t.Fatalf("late event not routed to side output: %v", sideOutput)
 	}
 	// But it was still applied to aggregation (commutative completeness).
-	bucket := c.State.Members["u1"].Aggregations[behaviorModel.BehaviorCryptoWithdraw].Buckets[alignBucket(base)]
+	bucket := c.State.member("u1").Aggregations[behaviorModel.BehaviorCryptoWithdraw].Buckets[alignBucket(base)]
 	if bucket == nil || bucket.Count != 1 {
 		t.Fatalf("late event must still update aggregation state")
 	}

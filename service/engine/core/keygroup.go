@@ -9,10 +9,12 @@ import "hash/crc32"
 
 // NumKeyGroups is the fixed number of key groups. This is a day-1 commitment:
 // changing it would re-map every member to a different key group, defeating the
-// whole point of the abstraction. 128 mirrors Flink's default maxParallelism —
-// large enough that any realistic shard count gets a handful of key groups each,
-// small enough that per-key-group snapshot files stay coarse.
-const NumKeyGroups = 128
+// whole point of the abstraction. 1024 is sized for the target scale (100M
+// members, ~20M active): ~20K members per key group keeps copy-on-write map
+// clones small during a snapshot, and 50–70 shards still get ~15–20 key groups
+// each for even balancing. Still coarse enough that per-key-group snapshot
+// files don't fragment IO (see README §Capacity sizing).
+const NumKeyGroups = 1024
 
 // KeyGroupID identifies one of the NumKeyGroups logical partitions.
 // It is an internal concept: NATS never sees it (see plan §1).

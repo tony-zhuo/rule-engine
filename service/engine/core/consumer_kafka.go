@@ -18,7 +18,7 @@ type KafkaConfig struct {
 	Partition        int32         // this shard's partition (1 shard ↔ 1 partition for now)
 	MaxPollRecords   int           // backpressure: cap on records per PollFetches
 	SnapshotPath     string        // file to snapshot to ("" disables snapshots)
-	SnapshotInterval time.Duration // how often to snapshot inline in the main loop
+	SnapshotInterval time.Duration // how often to start a background snapshot
 
 	// OnProcessed mirrors NATSConfig.OnProcessed: end-to-end latency per live
 	// event, silent during replay, nil = no overhead.
@@ -110,18 +110,16 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 
 	// 4. Main loop: PollFetches → decode → ProcessEvent → update lastSeq.
 	//    Single goroutine = single writer (the property keeping state lock-free).
-	lastSnapshot := time.Now()
+	snapshots := newAsyncSnapshotter(cfg.SnapshotPath, cfg.SnapshotInterval)
 	for {
 		fetches := c.client.PollFetches(ctx)
 
 		// Clean shutdown on ctx cancel — PollFetches returns immediately when
 		// ctx is done; we detect via ctx.Err() rather than scanning errors.
 		if ctx.Err() != nil {
-			if cfg.SnapshotPath != "" {
-				if serr := snapshotToFile(core, cfg.SnapshotPath); serr != nil {
-					slog.Error("final snapshot failed",
-						"shard", core.ShardID, "backend", "kafka", "error", serr)
-				}
+			if serr := snapshots.drain(core); serr != nil {
+				slog.Error("final snapshot failed",
+					"shard", core.ShardID, "backend", "kafka", "error", serr)
 			}
 			return nil
 		}
@@ -161,14 +159,8 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 		//    next Poll, so a slow Core naturally throttles fetching. FetchMaxBytes
 		//    on the client caps per-poll volume if explicit ceiling is needed.
 
-		// 6. Inline snapshot (single-writer; gap #20 — async would need COW).
-		if cfg.SnapshotPath != "" && cfg.SnapshotInterval > 0 &&
-			time.Since(lastSnapshot) >= cfg.SnapshotInterval {
-			if serr := snapshotToFile(core, cfg.SnapshotPath); serr != nil {
-				slog.Error("snapshot failed",
-					"shard", core.ShardID, "backend", "kafka", "error", serr)
-			}
-			lastSnapshot = time.Now()
-		}
+		// 6. Periodic snapshot: freeze here, encode + write in the background
+		//    (copy-on-write keeps the frozen view consistent, gap #20).
+		snapshots.tick(core)
 	}
 }

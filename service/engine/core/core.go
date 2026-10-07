@@ -34,6 +34,9 @@ type Core struct {
 
 	lastSeq   atomic.Uint64 // last NATS stream sequence applied (checkpointed with snapshot)
 	replaying atomic.Bool   // true while rebuilding from the log — suppresses side effects
+
+	epoch       uint64 // copy-on-write epoch, bumped by each freezeState (state.go)
+	frozenEpoch uint64 // epoch of the in-flight snapshot; 0 = none
 }
 
 // BeginReplay / EndReplay bracket replay after a snapshot load. While replaying,
@@ -94,7 +97,7 @@ func NewCore(shardID int, ruleSet *ruleModel.CompiledRuleSet, opts ...Option) *C
 // This is the single entry point the NATS consumer (Task H) will call; keeping
 // it free of any I/O is what lets the whole engine be tested with plain values.
 func (c *Core) ProcessEvent(event *behaviorModel.BehaviorEvent) *ProcessResult {
-	ms := c.State.getOrCreateMember(event.MemberID)
+	ms := c.memberForWrite(event.MemberID)
 	late := c.isLate(event.OccurredAt)
 
 	// Apply to aggregation regardless of lateness: bucket ops (count/sum/max/min)

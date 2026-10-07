@@ -11,12 +11,16 @@ The engine is **MQ-pluggable** across NATS JetStream and Kafka, with a shadow-tr
 ## Status
 
 ```
-service/engine/core/  21/21 tests passing
+service/engine/core/  33/33 tests passing (also clean under -race)
 
   7 CEP tests          multi-step sequences, window expiry, negative patterns
   6 ProcessEvent tests rule firing, idempotency, determinism, out-of-order, late events
-  3 Snapshot tests     round-trip / replay safety / side-effect suppression
+  6 Snapshot tests     round-trip / replay safety / side-effect suppression /
+                       background encode while writing / async snapshotter
+  5 State tests        copy-on-write frozen view, clone-once-per-snapshot, deep clone
+  2 Key group tests    K=1024 range, contiguous + balanced kg → shard assignment
   2 NATS tests         end-to-end + crash recovery over an embedded NATS server
+  2 OnProcessed tests  benchmark latency hook: live events only, silent during replay
   2 Kafka tests        end-to-end + crash recovery over real Kafka (testcontainers)
 ★ 1 Shadow test        NATS and Kafka backends produce identical ShardState
 ```
@@ -63,7 +67,7 @@ The control plane writes rules; the engine reads them once at startup and then n
 
 ```
 service/engine/core/
-  ├─ keygroup.go        member → key group (crc32 % 128) → shard
+  ├─ keygroup.go        member → key group (crc32 % 1024) → shard
   ├─ state.go           ShardState / MemberState / BehaviorAgg / BucketData
   ├─ aggregation.go     time-bucketed aggregation over the member's events
   ├─ eval.go            rule evaluation via the AST compiler
@@ -93,12 +97,43 @@ cmd/
 |---------|-----------|---------------|
 | **Hand-built Flink internals** | key groups · event-time + watermark · snapshot + replay · CEP | Borrows Flink's correctness primitives at single-binary scale, and keeps the runtime in Go and fully owned |
 | **Single-writer principle** | one shard = one goroutine; state has no locks | Borrows LMAX Disruptor's idea; correctness without mutexes, predictable throughput |
-| **Two-stage key mapping** | `member → key group (128) → shard`, not `member → shard` | Rescaling moves whole key groups between shards instead of rehashing every member |
+| **Two-stage key mapping** | `member → key group (1024) → shard`, not `member → shard` | Rescaling moves whole key groups between shards instead of rehashing every member |
 | **MQ-pluggable** | `EventConsumer` / `EventProducer` interfaces; NATS + Kafka backends | Kafka is the production-grade default for finance; NATS is the low-latency alternative and runs in-process in tests |
 | **Shadow traffic comparison** | one event stream → both backends → `reflect.DeepEqual(state)` passes | Structural proof that "pluggable" isn't rhetoric — both backends produce identical results |
 | **Engine owns the source offset** | snapshot stores `LastSeq`; consumer resumes from `LastSeq+1`, ignoring broker cursors | Source position and state stay consistent across crashes; same idea on both backends |
 | **Replay-safe idempotency** | `event_id` dedup co-located inside `BucketData`, snapshotted with the state | `Restore + replay overlap == single pass`, validated by `TestSnapshot_ReplaySafety` |
 | **Negative patterns via a deadline heap** | "A, then NOT B within W" fires when the watermark passes the deadline | Timer-driven matching in an otherwise event-driven engine; a silent member still gets their match |
+
+### Capacity sizing (estimates)
+
+Target scale and the numbers derived from it. These are planning estimates, not measurements — the per-member state size in particular is still waiting on a memory benchmark.
+
+| Assumption | Value | Note |
+|------------|-------|------|
+| Registered members | 100M | side-project target |
+| Active members (in memory) | 20% → **20M** | "active" = has an event inside the longest rule window |
+| Longest rule window | 7 days | decides how long a member's state stays resident |
+| State per active member | ~7 KB | estimate: 2–5 CEP progresses × ~1 KB + ~2 KB aggregation (plan §記憶體成本估算) |
+| Recovery target (RTO) | ~5 s | process crash → snapshot load + replay back to live |
+
+Derived:
+
+```
+20M active × 7 KB  ≈ 140 GB total state
+5 s RTO            → keep each shard at ~2–3 GB so snapshot load fits the budget
+140 GB ÷ 2–3 GB    ≈ 50–70 shards
+```
+
+**Why K = 1024 key groups (not 128):**
+
+| | K = 128 | K = 1024 |
+|---|---|---|
+| Members per key group | ~156K | ~20K |
+| Map size copy-on-write clones on first write during a snapshot | 156K entries — longer main-loop stall (guess: ms-level, unmeasured) | 20K entries |
+| Key groups per shard at 50–70 shards | 1–2 — hard to balance load | ~15–20 — balances evenly |
+| Upper bound on shard count | 128 | 1024 |
+
+The first row is the direct reason: with K = 128 at this scale each key group is too large for per-key-group copy-on-write to spread the clone cost. K is fixed for the lifetime of the system (changing it re-routes every member), so it is sized for the target scale up front.
 
 ---
 
@@ -150,7 +185,7 @@ PostgreSQL holds `rule_strategies` and `cep_patterns` only — configuration, no
 ## Roadmap
 
 ```
-✅  Engine core, both MQ backends, shadow-verified state equivalence (21/21 green)
+✅  Engine core, both MQ backends, shadow-verified state equivalence
 ✅  Negative CEP patterns (timer-driven deadline heap)
 ⏳  Benchmark roadmap M1 → M5 (10K → 100K per shard → 500K across shards)
 ⏳  Async barrier checkpointing + per-key-group incremental snapshots

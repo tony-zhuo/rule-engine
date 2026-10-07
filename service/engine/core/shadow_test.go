@@ -130,7 +130,7 @@ func TestShadow_BothBackendsAgree(t *testing.T) {
 	}
 
 	// Sanity: state actually contains the data (not both equal because both empty).
-	alice := natsCore.State.Members["alice"]
+	alice := natsCore.State.member("alice")
 	if alice == nil {
 		t.Fatal("alice missing from shadow state — neither backend processed events?")
 	}

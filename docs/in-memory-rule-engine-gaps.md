@@ -223,7 +223,7 @@ single goroutine 處理 → 該 member 序列化所有 event
 
 **建議**：拆出 `docs/adr/` 目錄，至少寫這幾個 ADR：
 - ADR-001: 採用 NATS JetStream 而非 Kafka
-- ADR-002: K=128 key group 的選擇
+- ADR-002: K key group 數量的選擇（2026-10-07 從 128 改成 1024，依據見 README §Capacity sizing）
 - ADR-003: Single goroutine per shard
 - ADR-004: 自刻 vs Flink
 
@@ -362,7 +362,7 @@ POST /debug/replay/:member_id?from=<ts>
 
 ---
 
-### [ ] #20 Snapshot worker 與 main loop 的並發 / Copy-on-write（🔴 latent Go panic）
+### [x] #20 Snapshot worker 與 main loop 的並發 / Copy-on-write（🔴 latent Go panic）
 
 **問題**：§Incremental 的 `onBarrier` 做 `refs := snapshotRefs(dirty)` 後 fork 背景 goroutine 序列化。若 `refs` 只是 map 指標，主 goroutine 繼續處理同一個 dirty key group 的新事件時，會跟背景序列化發生 **concurrent map read/write → Go runtime 直接 panic**（`fatal error: concurrent map read and map write`）。plan 宣稱「主路徑 pause ≈ µs 級」+「背景序列化 references」這兩件事**只在有 copy-on-write 時才成立**，但 plan 沒提 COW，兩段互相矛盾。
 
@@ -379,7 +379,13 @@ POST /debug/replay/:member_id?from=<ts>
 
 **對應**：plan §Checkpoint / §Incremental。
 
-**決策**：（待填）
+**決策**：選 (c) copy-on-write ✓（2026-10-07，見 [`docs/plans/2026-10-07-cow-async-snapshot.md`](./plans/2026-10-07-cow-async-snapshot.md)）。
+
+- State 改成以 key group 分桶（`ShardState.keyGroups [1024]`），兩層 lazy COW：kg 的 map 在 freeze 之後第一次被寫入時 `maps.Clone`，member 在 freeze 之後第一次被寫入時深拷貝；用 epoch / version 判斷物件是否還被 snapshot 引用。
+- `beginSnapshot` 只複製 kg 指標陣列（µs 級），`encode` + 寫檔在背景 goroutine 執行，同時間最多一個 snapshot 在跑（`consumer.go` `asyncSnapshotter`）。
+- 所有寫入都走 `Core.memberForWrite`；`TestSnapshot_EncodeWhileWriting` 在 `-race` 下驗證，故意關掉 member clone 會被抓到 DATA RACE。
+- 代價：snapshot 期間記憶體峰值最多 2 倍；member 第一次被寫入時要深拷貝，snapshot 期間 p99 會上升（尚未量測）。
+- plan 本文 §Checkpoint 的「µs pause」敘述尚未同步修改。
 
 ---
 
@@ -506,6 +512,6 @@ POST /debug/replay/:member_id?from=<ts>
 - 🟡 Architectural / Learning: 3/8 完成（#2 Hot Key、#4 Observability、#12 CEP Negative Pattern ✨ commit `dcecc9b`）
 - 🟢 Nice to have: 1/5 完成（#1 採 5-milestone roadmap）
 - ❌ 不適用: 3 項（已折疊）
-- 🔬 第二輪缺口（面試準備複查）: 2/9 處理（#19 Event Identity Contract、#22 Dedup retention vs allowedLateness;#20、#27 為 🔴 仍待）
+- 🔬 第二輪缺口（面試準備複查）: 3/9 處理（#19 Event Identity Contract、#20 Copy-on-write snapshot、#22 Dedup retention vs allowedLateness;#27 為 🔴 仍待）
 
-**總計**：7/23 項已處理
+**總計**：8/23 項已處理

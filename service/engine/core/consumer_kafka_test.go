@@ -102,7 +102,7 @@ func TestKafka_EndToEnd(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 
-	ms := core.State.Members["u1"]
+	ms := core.State.member("u1")
 	if ms == nil {
 		t.Fatal("u1 has no state — events not processed")
 	}
@@ -162,7 +162,7 @@ func TestKafka_CrashRecovery(t *testing.T) {
 	_ = runUntilCaughtUp()          // first Core processes, then "crashes"
 	recovered := runUntilCaughtUp() // fresh Core replays the log from offset 0
 
-	ms := recovered.State.Members["u1"]
+	ms := recovered.State.member("u1")
 	if ms == nil {
 		t.Fatal("recovered core lost u1 state")
 	}

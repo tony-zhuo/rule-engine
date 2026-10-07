@@ -61,11 +61,11 @@ func (c *Core) drainNegativeMatches(watermark time.Time) []*cepModel.MatchResult
 		}
 		heap.Pop(&c.negDeadlines)
 
-		ms, ok := c.State.Members[top.MemberID]
-		if !ok {
+		ro := c.State.member(top.MemberID)
+		if ro == nil {
 			continue
 		}
-		p, ok := ms.Progresses[top.ProgressID]
+		p, ok := ro.Progresses[top.ProgressID]
 		if !ok {
 			continue // already aborted / cleaned up
 		}
@@ -75,6 +75,10 @@ func (c *Core) drainNegativeMatches(watermark time.Time) []*cepModel.MatchResult
 		if p.NegativeDeadline.IsZero() || !p.NegativeDeadline.Equal(top.Deadline) {
 			continue
 		}
+		// Stale entries return above without a write, so they never trigger a
+		// copy-on-write clone; from here on the progress is deleted.
+		ms := c.memberForWrite(top.MemberID)
+		p = ms.Progresses[top.ProgressID]
 		cp := c.patternByID(p.PatternID)
 		if cp == nil {
 			delete(ms.Progresses, top.ProgressID)

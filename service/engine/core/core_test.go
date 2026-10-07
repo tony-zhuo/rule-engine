@@ -79,7 +79,7 @@ func TestProcessEvent_Idempotent(t *testing.T) {
 	c.ProcessEvent(ev)
 	c.ProcessEvent(ev) // redelivery of the exact same event
 
-	bucket := c.State.Members["u1"].Aggregations[behaviorModel.BehaviorCryptoWithdraw].Buckets[alignBucket(base)]
+	bucket := c.State.member("u1").Aggregations[behaviorModel.BehaviorCryptoWithdraw].Buckets[alignBucket(base)]
 	if bucket.Count != 1 {
 		t.Fatalf("count after duplicate = %d, want 1", bucket.Count)
 	}
