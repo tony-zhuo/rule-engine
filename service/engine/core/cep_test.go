@@ -240,6 +240,49 @@ func TestCEP_NegativeBoundary(t *testing.T) {
 	}
 }
 
+// TestCEP_NegativeIgnoresEventPastDeadline: with allowed lateness, a forbidden
+// event whose event time is already past the deadline can arrive before the
+// watermark passes the deadline. It happened outside the window, so it must not
+// abort — the match still fires once the watermark catches up.
+func TestCEP_NegativeIgnoresEventPastDeadline(t *testing.T) {
+	c := NewCore(0, &ruleModel.CompiledRuleSet{}, WithAllowedLateness(10*time.Second))
+	if err := c.AddPattern(missedVerifyPattern()); err != nil {
+		t.Fatalf("add pattern: %v", err)
+	}
+	base := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+
+	c.ProcessEvent(behaviorEvent("e0", "alice", "login", base))
+
+	// verify at deadline+3s → watermark = deadline-7s, deadline not yet passed.
+	if res := c.ProcessEvent(behaviorEvent("e1", "alice", "verify", base.Add(5*time.Minute+3*time.Second))); len(res.MatchedPatterns) != 0 {
+		t.Fatalf("watermark has not passed the deadline, must not fire yet, got %v", res.MatchedPatterns)
+	}
+	if _, exists := c.State.member("alice").Progresses["missed_verify|alice|e0"]; !exists {
+		t.Fatal("verify past the deadline must not abort the progress")
+	}
+
+	res := c.ProcessEvent(behaviorEvent("e2", "bob", "browse", base.Add(5*time.Minute+20*time.Second)))
+	if len(res.MatchedPatterns) != 1 || res.MatchedPatterns[0].MemberID != "alice" {
+		t.Fatalf("expected alice's negative match once watermark passes deadline, got %v", res.MatchedPatterns)
+	}
+}
+
+// TestCEP_NegativeAbortedAtDeadline: the window is inclusive of the deadline,
+// matching the positive-state expiry check (OccurredAt.After(deadline) → out).
+func TestCEP_NegativeAbortedAtDeadline(t *testing.T) {
+	c := newNegativeCore(t)
+	base := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+
+	c.ProcessEvent(behaviorEvent("e0", "alice", "login", base))
+	c.ProcessEvent(behaviorEvent("e1", "alice", "verify", base.Add(5*time.Minute)))
+	if _, exists := c.State.member("alice").Progresses["missed_verify|alice|e0"]; exists {
+		t.Fatal("verify exactly at the deadline is inside the window and must abort")
+	}
+	if res := c.ProcessEvent(behaviorEvent("e2", "bob", "browse", base.Add(10*time.Minute))); len(res.MatchedPatterns) != 0 {
+		t.Fatalf("aborted progress must not fire, got %v", res.MatchedPatterns)
+	}
+}
+
 // TestCEP_AddPattern_RejectsMidSequenceNegative proves the terminal-only
 // validation — mid-sequence negatives are explicitly out of scope for v1.
 func TestCEP_AddPattern_RejectsMidSequenceNegative(t *testing.T) {

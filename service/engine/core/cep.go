@@ -187,6 +187,11 @@ func (c *Core) advanceProgress(ms *MemberState, event *cepModel.Event, progress 
 	// happened) or doesn't (→ leave; watermark drain will fire the match when
 	// the deadline elapses with no abort).
 	if state.IsNegative {
+		// With allowed lateness, an event past the deadline can arrive before the
+		// watermark does. It happened outside the window, so it can't abort.
+		if event.OccurredAt.After(progress.NegativeDeadline) {
+			return nil, false
+		}
 		matched, err := cepMatchState(event, cp.compiledStates[progress.CurrentStep], progress.Variables)
 		if err != nil || !matched {
 			return nil, false
