@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,6 +106,7 @@ func main() {
 	snapshotOn := env.Str("SNAPSHOT", "off") == "on"
 	outDir := env.Str("OUT_DIR", "docs/benchmarks/raw")
 	ratesCSV := env.Str("RATES", "10000,20000,40000,80000,160000")
+	cpuProfile := env.Str("CPU_PROFILE", "") // pprof output path; "" = off
 
 	runID := fmt.Sprintf("bench-%d", time.Now().Unix())
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -167,6 +169,18 @@ func main() {
 		"member_pool", memberPool)
 
 	// --- run stages ---
+	// Profile covers the stages only (not setup/teardown). Producer and consumer
+	// share the process, so both show up — separate them by call stack.
+	if cpuProfile != "" {
+		f, perr := os.Create(cpuProfile)
+		if perr != nil {
+			log.Fatal("create cpu profile: ", perr)
+		}
+		defer f.Close()
+		if perr := pprof.StartCPUProfile(f); perr != nil {
+			log.Fatal("start cpu profile: ", perr)
+		}
+	}
 	var stages []stageResult
 	switch mode {
 	case "fixed":
@@ -186,6 +200,10 @@ func main() {
 		}
 	default:
 		log.Fatalf("unknown MODE=%q (want: fixed|ladder)", mode)
+	}
+
+	if cpuProfile != "" {
+		pprof.StopCPUProfile()
 	}
 
 	stopConsumer()
