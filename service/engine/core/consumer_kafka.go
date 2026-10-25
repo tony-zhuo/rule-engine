@@ -16,7 +16,7 @@ import (
 type KafkaConfig struct {
 	Topic            string        // e.g. "rule-events"
 	Partition        int32         // this shard's partition (1 shard ↔ 1 partition for now)
-	MaxPollRecords   int           // backpressure: cap on records per PollFetches
+	MaxPollRecords   int           // cap on records per PollRecords (<= 0: all buffered)
 	SnapshotPath     string        // file to snapshot to ("" disables snapshots)
 	SnapshotInterval time.Duration // how often to start a background snapshot
 
@@ -108,13 +108,13 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 		cfg.Topic: {cfg.Partition: kgo.NewOffset().At(startOffset)},
 	})
 
-	// 4. Main loop: PollFetches → decode → ProcessEvent → update lastSeq.
+	// 4. Main loop: PollRecords → decode → ProcessEvent → update lastSeq.
 	//    Single goroutine = single writer (the property keeping state lock-free).
 	snapshots := newAsyncSnapshotter(cfg.SnapshotPath, cfg.SnapshotInterval)
 	for {
-		fetches := c.client.PollFetches(ctx)
+		fetches := c.client.PollRecords(ctx, cfg.MaxPollRecords)
 
-		// Clean shutdown on ctx cancel — PollFetches returns immediately when
+		// Clean shutdown on ctx cancel — PollRecords returns immediately when
 		// ctx is done; we detect via ctx.Err() rather than scanning errors.
 		if ctx.Err() != nil {
 			if serr := snapshots.drain(core); serr != nil {
