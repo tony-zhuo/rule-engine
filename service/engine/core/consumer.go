@@ -119,10 +119,20 @@ func (s *asyncSnapshotter) drain(core *Core) error {
 	return snapshotToFile(core, s.path)
 }
 
+// finish releases the frozen view and logs how long the snapshot took (s.last
+// is its start). One that outran the interval delayed the next one and kept
+// copy-on-write on the whole time, so it is logged as a warning.
 func (s *asyncSnapshotter) finish(core *Core, err error) {
 	core.endSnapshot()
 	s.done = nil
-	if err != nil {
-		slog.Error("snapshot failed", "shard", core.ShardID, "error", err)
+	took := time.Since(s.last)
+	switch {
+	case err != nil:
+		slog.Error("snapshot failed", "shard", core.ShardID, "took", took, "error", err)
+	case took > s.interval:
+		slog.Warn("snapshot took longer than interval; next one was delayed",
+			"shard", core.ShardID, "took", took, "interval", s.interval)
+	default:
+		slog.Info("snapshot written", "shard", core.ShardID, "took", took)
 	}
 }
