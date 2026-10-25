@@ -13,7 +13,7 @@ import (
 
 // buildWithdrawRuleSet builds a one-rule set: "sum of CryptoWithdraw.amount over
 // the last 5 minutes > 10000". Reuses the real rule compiler — no mocking.
-func buildWithdrawRuleSet(t *testing.T) *ruleModel.CompiledRuleSet {
+func buildWithdrawRuleSet(t testing.TB) *ruleModel.CompiledRuleSet {
 	t.Helper()
 	node := ruleModel.RuleNode{
 		Type:     ruleModel.NodeCondition,
