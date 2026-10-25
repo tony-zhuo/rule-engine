@@ -310,14 +310,14 @@ Rule Engine Core (per shard, one instance)
                     ┌──────────────────────┐
                     │  member_id（百萬級） │
                     └──────────┬───────────┘
-                               │ crc32 % 128
+                               │ crc32 % 1024
                                │ ★ 這個 mapping 永遠不變
                                ▼
               ┌────────────────────────────────────┐
-              │   Key Group ID  (固定 128 個)      │
-              │   kg_000, kg_001, ..., kg_127      │
+              │   Key Group ID  (固定 1024 個)     │
+              │   kg_0000, kg_0001, ..., kg_1023   │
               └────────────────┬───────────────────┘
-                               │ kgID * N / 128
+                               │ kgID * N / 1024
                                │ ★ 這個 mapping 是執行期配置
                                │   rescaling 時只動這層
                                ▼
@@ -327,14 +327,14 @@ Rule Engine Core (per shard, one instance)
               └─────────────────────────────────┘
 
 範例：N=4 shard 時             範例：N=8 shard 時（rescale 後）
-  shard_0  ← kg_000 ~ kg_031     shard_0  ← kg_000 ~ kg_015
-  shard_1  ← kg_032 ~ kg_063     shard_1  ← kg_016 ~ kg_031
-  shard_2  ← kg_064 ~ kg_095     shard_2  ← kg_032 ~ kg_047
-  shard_3  ← kg_096 ~ kg_127     ...
-                                 shard_7  ← kg_112 ~ kg_127
+  shard_0  ← kg_0000 ~ kg_0255   shard_0  ← kg_0000 ~ kg_0127
+  shard_1  ← kg_0256 ~ kg_0511   shard_1  ← kg_0128 ~ kg_0255
+  shard_2  ← kg_0512 ~ kg_0767   shard_2  ← kg_0256 ~ kg_0383
+  shard_3  ← kg_0768 ~ kg_1023   ...
+                                 shard_7  ← kg_0896 ~ kg_1023
 
 Rescaling 只需要：
-  1. 更新 128 筆 kg→shard 映射
+  1. 更新 1024 筆 kg→shard 映射
   2. 各 shard 重讀「自己現在擁有的 key group」snapshot 檔
   3. 從各 kg 對應的 nats_seq 開始 replay
                 ↑
@@ -342,7 +342,7 @@ Rescaling 只需要：
 ```
 
 **重點**：
-- 128 是純邏輯數字（key group），NATS 完全感知不到
+- 1024 是純邏輯數字（key group），NATS 完全感知不到
 - 物理上 NATS subject、consumer、Core process 都只認 N 個 shard
 - 兩段映射讓 rescale downtime 從 10 分鐘級 → < 1 分鐘
 
@@ -655,11 +655,11 @@ Phase 2: Commit
 借用 Flink 的 **key group** 抽象，把「key 數量」跟「shard 數量」解耦：
 
 ```
-member_id ──hash──→ key_group_id (固定 K=128 個) ──assign──→ shard_id (可變 N 個)
+member_id ──hash──→ key_group_id (固定 K=1024 個) ──assign──→ shard_id (可變 N 個)
 ```
 
 ```go
-const numKeyGroups = 128  // 一旦上線就固定不變
+const numKeyGroups = 1024  // 一旦上線就固定不變
 
 keyGroupID := crc32(memberID) % numKeyGroups
 shardID    := keyGroupID * numShards / numKeyGroups
@@ -668,15 +668,15 @@ natsSubject := fmt.Sprintf("rule.events.%d.%s", shardID, memberID)
 
 **為什麼分兩層**：
 - `member_id → key_group` 永遠固定（不受 shard 數變動影響）
-- `key_group → shard` 是執行期配置，rescaling 時只重新分配 128 個 key group，不用搬 1M member 的 state
+- `key_group → shard` 是執行期配置，rescaling 時只重新分配 1024 個 key group，不用搬 1M member 的 state
 - Snapshot 也按 key group 切（見 §Checkpoint），rescale 時各 shard 讀「自己現在擁有的 key group」對應的 snapshot 段就好
 
-**初始**：4 shards，128 key group → 每 shard 32 個 key group，每 group 約 7800 member。
-**擴充**：8 shards 時每 shard 16 個 key group，重新分配只動 128 筆映射、搬對應 snapshot 段。Downtime 目標 **< 1 分鐘**（vs 沒 key group 時的 10 分鐘級）。
+**初始**：4 shards，1024 key group → 每 shard 256 個 key group。目標規模（20M active member）下每 group 約 2 萬 member。
+**擴充**：8 shards 時每 shard 128 個 key group，重新分配只動 1024 筆映射、搬對應 snapshot 段。Downtime 目標 **< 1 分鐘**（vs 沒 key group 時的 10 分鐘級）。
 
 #### Key Group 不是 NATS 提供的概念
 
-容易誤會的點：**key group 不是 NATS 的 feature**。NATS 完全不知道 key group 的存在。它純粹是我們程式碼裡算出來的一個 Go int（0~127），從 Flink 的 `KeyGroupAssignment` 借過來的設計概念。
+容易誤會的點：**key group 不是 NATS 的 feature**。NATS 完全不知道 key group 的存在。它純粹是我們程式碼裡算出來的一個 Go int（0~1023），從 Flink 的 `KeyGroupAssignment` 借過來的設計概念。
 
 - 它不會出現在 NATS subject 裡
 - 它不會出現在 NATS message header 裡
@@ -706,10 +706,10 @@ Key group 只在兩個地方被用到：
 memberID := "user_abc"
 
 // Step 1（純 CPU 計算）：member → key group
-kgID := crc32("user_abc") % 128       // = e.g. 42  ← 永遠不變
+kgID := crc32("user_abc") % 1024      // = e.g. 300  ← 永遠不變
 
 // Step 2（純 CPU 計算）：key group → shard
-shardID := kgID * numShards / 128     // 假設 N=4 → shardID = 1
+shardID := kgID * numShards / 1024    // 假設 N=4 → shardID = 1
                                        // ★ rescale 時只有這行的結果會變
 
 // Step 3（這才是真的 NATS publish）
@@ -717,7 +717,7 @@ subject := "rule.events.1.user_abc"
 nats.Publish(subject, eventBytes)
 ```
 
-**Producer 直接 publish 到 N 個 shard subject 之一**。128 只是中間算出來的數字，連 NATS 訊息 header 都不會帶。
+**Producer 直接 publish 到 N 個 shard subject 之一**。1024 只是中間算出來的數字，連 NATS 訊息 header 都不會帶。
 
 #### 端到端資料流
 
@@ -727,11 +727,11 @@ nats.Publish(subject, eventBytes)
 
  memberID = "user_abc"
         │
-        │ crc32 % 128
+        │ crc32 % 1024
         ▼
- keyGroupID = 42  ◀── 純粹 Go int
-        │                NATS 完全不知道有 42 這個東西
-        │ * N / 128
+ keyGroupID = 300 ◀── 純粹 Go int
+        │                NATS 完全不知道有 300 這個東西
+        │ * N / 1024
         ▼
  shardID = 1  ──────────▶  publish 到 subject:
                            "rule.events.1.user_abc"
@@ -747,21 +747,21 @@ nats.Publish(subject, eventBytes)
                                  ▼
                           Consumer 1  ──▶  Core process #1
                                               │
-                                              │ kgID = 42（重算）
+                                              │ kgID = 300（重算）
                                               ▼
                                           /var/lib/rule-engine/
                                             snapshots/shard_1/
-                                              kg_042/barrier_*.snap
+                                              kg_0300/barrier_*.snap
                                               ↑
-                                       這裡才看到 42 的存在
+                                       這裡才看到 300 的存在
 ```
 
 **重點**：
-- 「128」這個數字只活在 Producer 計算邏輯跟 Core 自己的磁碟路徑裡，NATS 從頭到尾不認識它
+- 「1024」這個數字只活在 Producer 計算邏輯跟 Core 自己的磁碟路徑裡，NATS 從頭到尾不認識它
 - Producer 算出 shardID 之後直接 publish 到對應 subject
 - NATS Stream 是一份 log，所有 shard 的訊息混在一起按時序 append
 - Consumer 用 subject filter（`rule.events.{shard_id}.>`）撈自己那份
-- Core process 收到事件後，**自己重新算一次** `kgID = crc32(memberID) % 128`，用來決定 dirty bitset 跟 snapshot 路徑
+- Core process 收到事件後，**自己重新算一次** `kgID = crc32(memberID) % 1024`，用來決定 dirty bitset 跟 snapshot 路徑
 
 #### 為什麼不直接 `crc32 % N` 就好？
 
@@ -778,50 +778,65 @@ nats.Publish(subject, eventBytes)
 
 
 做法 B（用 key group，本計畫採用）：
-  N=4 時：  user_abc → kg_42 → shard 1   (42 * 4 / 128 = 1)
-  N=8 時：  user_abc → kg_42 → shard 2   (42 * 8 / 128 = 2)
+  N=4 時：  user_abc → kg_300 → shard 1   (300 * 4 / 1024 = 1)
+  N=8 時：  user_abc → kg_300 → shard 2   (300 * 8 / 1024 = 2)
               ↑
-          kg 永遠是 42
+          kg 永遠是 300
 
   → member → kg 的 hash 永遠不變
   → snapshot 是按 kg 分檔的，所以 rescale 只是
-    「shard_2 改去讀 kg_42 那一份檔」，不用解壓重組
+    「shard_2 改去讀 kg_300 那一份檔」，不用解壓重組
   → downtime < 1 分鐘
 ```
 
-**做法 B 的代價**：多寫 ~50 行 Go code、snapshot 路徑多一層目錄、選一個一開始就要釘住的 magic number（128）。換來 rescale downtime 從分鐘級 → 秒級。對「未來可能要 scale」的系統幾乎是免費的保險。
+**做法 B 的代價**：多寫 ~50 行 Go code、snapshot 路徑多一層目錄、選一個一開始就要釘住的 magic number（1024）。換來 rescale downtime 從分鐘級 → 秒級。對「未來可能要 scale」的系統幾乎是免費的保險。
 
-#### 為什麼選 128？
+#### 為什麼選 1024？
 
-128 = key group 的總數，一旦上線**不能改**（改了就所有 member 重 hash，等於做法 A 的災難）。選擇考量：
-
-- **比預期 shard 數量大很多**：這樣每個 shard 才能拿到「一把」key group，rescale 才彈性。預期最多 ~32 shard，每 shard 拿 4 個 kg 還有空間
-- **不要太大**：每個 key group 一份 snapshot 檔。128 = 128 個檔案可接受；如果 10000 個 key group → 10000 個檔，IO 變很碎
-
-Flink 預設也是 128（`maxParallelism`），算是個經過驗證的甜蜜點。
-
-#### 128 是 day-1 commitment，跟 member 數量無關
-
-容易誤會：「等 member 變千萬級時要不要改 K？」**不用**。`crc32 % 128` 是從第一天就釘住的常數，跟 member 總數無關，只跟「未來最多會有幾個 shard」有關。
-
-| 情境 | K=128 是否要動 |
-|------|--------------|
-| Member 從 1M 長到 100M | ✗ 不動 |
-| Shard 從 4 加到 16、32 | ✗ 不動 |
-| 機器規格升級 / 換 CPU | ✗ 不動 |
-| Snapshot 格式版本升級 | ✗ 不動 |
-| **未來需要 > 128 shard** | ✓ 這時才考慮（門檻 ≈ 12.8M events/s）|
+1024 = key group 的總數，一旦上線**不能改**（改了就所有 member 重 hash，等於做法 A 的災難）。所以要一開始就按目標規模定下來（見 README §Capacity sizing）：
 
 ```
-member 數量變動時，每個 kg 「變肥」是預期內的事：
-  member 1M    → 每 kg ≈ 7800 members
-  member 10M   → 每 kg ≈ 78,000 members
-  member 100M  → 每 kg ≈ 780,000 members
+100M registered × 20% active  = 20M active member
+20M × ~7 KB                   ≈ 140 GB total state
+RTO ~5 s → 每 shard ~2–3 GB   → 50–70 shards
+```
+
+| | K = 128 | K = 1024 |
+|---|---|---|
+| 每 kg member 數（20M active） | ~156K | ~20K |
+| Snapshot 期間 copy-on-write 首次寫入要 clone 的 map 大小 | 156K entries，主迴圈卡比較久（推估 ms 級，未實測） | 20K entries |
+| 50–70 shards 時每 shard 分到的 kg | 1–2 個，很難平衡 | ~15–20 個，平均分得開 |
+| Shard 數上限 | 128 | 1024 |
+
+第一列是直接原因：copy-on-write 是以 key group 為單位 clone map，K=128 在這個規模下每個 kg 太肥，clone 成本攤不開。
+
+另一端的限制還是一樣：**不要太大**。每個 key group 一份 snapshot 檔，1024 個檔案還可以接受；到 10000 個 kg 就會變成 10000 個檔，IO 太碎。
+
+（Flink `maxParallelism` 的預設是 128，最早的版本就是照這個值選的；調成 1024 是因為容量目標改成上表。）
+
+#### 1024 是 day-1 commitment
+
+K 一旦上線就不動。它的大小取決於兩件事：「目標規模下每個 kg 多大」（copy-on-write clone 成本）跟「最多會開幾個 shard」。
+
+| 情境 | K=1024 是否要動 |
+|------|--------------|
+| Member 在目標規模（100M / 20M active）以內成長 | ✗ 不動 |
+| Shard 從 4 加到 50–70 | ✗ 不動 |
+| 機器規格升級 / 換 CPU | ✗ 不動 |
+| Snapshot 格式版本升級 | ✗ 不動 |
+| **Active member 遠超 20M，單 kg clone 成本又變成瓶頸** | ✓ 要重新評估（等於整體 migration） |
+| **未來需要 > 1024 shard** | ✓ 這時才考慮（門檻 ≈ 102M events/s）|
+
+```
+active member 數變動時，每個 kg 「變肥」是預期內的事：
+  active 1M    → 每 kg ≈ 1,000 members
+  active 20M   → 每 kg ≈ 20,000 members（目標規模）
+  active 100M  → 每 kg ≈ 100,000 members
 
 只要 hash 分布均勻，所有 kg 同步變肥，沒有 hotspot 問題。
 ```
 
-K=128 的真正天花板是 **最多 128 個 shard ≈ 12.8M events/s**（按單 shard 100K events/s 算）。對百萬到千萬級用戶綽綽有餘，唯有逼近全球頂級支付 / 交易所規模才會撞到——那時面對的問題遠不止 K 不夠。
+K=1024 的 shard 數天花板是 **最多 1024 個 shard ≈ 102M events/s**（按單 shard 100K events/s 算），遠超過目標規模需要的 50–70 shard。
 
 **千萬級時真正要處理的是這些**（都跟 K 無關）：
 
@@ -1436,7 +1451,7 @@ Step 6: 切到 live mode，正常處理
 
 ```
 情境：barrier 42 的 manifest 只列了 {kg_3, kg_7, kg_42}
-      但系統有 128 個 kg，其他 125 個 kg 的 state 怎麼來？
+      但系統有 1024 個 kg，其他 1021 個 kg 的 state 怎麼來？
 
 答：往前找最近一次「該 kg 有出現在 manifest 的 barrier」
 
@@ -2021,7 +2036,7 @@ func (c *Core) handleLateEvent(event Event) {
 | Source-driven | 上游定期送 watermark heartbeat 訊息 | 上游能保證 watermark 推進時 |
 | Idle source 處理 | 該 shard 沒事件時 watermark 卡住 → 用 timer 推進 | 流量不均時必要 |
 
-第一版用 per-shard 自推，加 idle timer fallback。
+第一版只用 per-shard 自推，**不加 idle timer fallback**：shard 沒事件時 watermark 停住，negative match / CEP timeout 延到下一個事件才 fire——接受這個延遲，換 replay 確定性（wall-clock timer 推進的 tick 不在 log 裡，replay 重現不了；Flink 的 `withIdleness` 也只把 idle input 排除在 min 之外，不推進時間）。真有 negative match 時效 SLA 時，再上 source-driven heartbeat（寫進 log，replay 可重現）。
 
 ---
 
@@ -2035,7 +2050,7 @@ func (c *Core) handleLateEvent(event Event) {
 從 4 → 8 shard 的步驟：
 1. 暫停 producer（or 上游 buffer）
 2. 等現有 shard 處理完 NATS 已有訊息（並寫 final checkpoint）
-3. 重算 key_group → shard assignment（128 個 key group → 8 shard，每 shard 16 個）
+3. 重算 key_group → shard assignment（1024 個 key group → 8 shard，每 shard 128 個）
 4. 各 shard 讀取「自己現在負責的 key group」的 snapshot 段
 5. 啟動，從 NATS 上次 checkpoint 對應的 seq replay
 6. 恢復 producer
@@ -2049,15 +2064,15 @@ func (c *Core) handleLateEvent(event Event) {
 
 ```
 snapshots/
-  ├─ kg_000/barrier_*.snap   ← 哪個 shard 負責就由哪個讀
-  ├─ kg_001/barrier_*.snap
+  ├─ kg_0000/barrier_*.snap   ← 哪個 shard 負責就由哪個讀
+  ├─ kg_0001/barrier_*.snap
   ├─ ...
-  └─ kg_127/barrier_*.snap
+  └─ kg_1023/barrier_*.snap
 ```
 
 ### 動態 rescaling（不停機）— v2
 
-不停機 rescaling 仍然複雜（要 mid-stream 切 ownership、處理 in-flight events 的歸屬交接），第一版不做。但 **key group 設計讓未來實作這件事的成本降一個數量級**：只需要協調 128 個 key group 的 ownership 切換，不用搬 1M member 的 state。
+不停機 rescaling 仍然複雜（要 mid-stream 切 ownership、處理 in-flight events 的歸屬交接），第一版不做。但 **key group 設計讓未來實作這件事的成本降一個數量級**：只需要協調 1024 個 key group 的 ownership 切換，不用搬 1M member 的 state。
 
 Flink 的 rescaling 也是 key group 級別的協調，可參考其 `KeyGroupAssignment` 演算法。
 
@@ -2394,8 +2409,8 @@ func computeShard(memberID string) int {
         return shardID  // 走 dedicated shard
     }
     // 2. 正常 kg → shard mapping
-    kgID := crc32(memberID) % 128
-    return kgID * numShards / 128
+    kgID := crc32(memberID) % 1024
+    return kgID * numShards / 1024
 }
 ```
 
@@ -2487,7 +2502,7 @@ hotkey.shard_skew_ratio{shard_id}        max(member_rate) / avg(member_rate)
 | Restart 時間 | 即時（stateless）| **~1 s**（incremental snapshot + replay）|
 | Source of truth | Redis | NATS JetStream log |
 | 程式模型 | Sync API | Async consumer |
-| Sharding 抽象 | N/A | Key group（128 個 fixed）→ shard 動態映射 |
+| Sharding 抽象 | N/A | Key group（1024 個 fixed）→ shard 動態映射 |
 | Snapshot 機制 | N/A | Async barrier + incremental（dirty key group only）|
 | Out-of-order 事件 | 不處理（隱含信任）| Watermark + allowed lateness + 遲到 path |
 | Result 輸出語意 | At-least-once（client 自己 dedup）| **End-to-end exactly-once**（two-phase commit sink）|
@@ -2534,7 +2549,7 @@ Benchmark 目標：單 shard > 50K events/s。
 
 交付：
 - [ ] Watermark 推進邏輯（per-shard `max(OccurredAt) - allowedLateness`）
-- [ ] Idle source timer fallback
+- [x] ~~Idle source timer fallback~~ — 不做：接受 idle shard 的延遲，換 replay 確定性（見 §Watermark 來源策略）
 - [ ] Window 觸發改為 watermark-driven（不是 wall clock）
 - [ ] 遲到事件 path：補進 bucket + window 重算 / side output
 - [ ] 測試：注入 out-of-order 事件流，驗證 window 結果跟 in-order 一致
@@ -2590,9 +2605,34 @@ Benchmark 目標：單 shard > 50K events/s。
 
 ### 3. 記憶體膨脹
 
-Member 數量爆炸 → OOM。
-防禦：LRU eviction + 最小 active threshold（只保留最近 7 天有事件的 member）。
-被 evict 的 member 再次有事件時，從 NATS replay 該 member 歷史重建。
+記憶體膨脹其實是兩個不同的問題，解法不一樣，不能混用：
+
+| | 不活躍 member 堆積 | 活躍集合本身超過記憶體 |
+|---|---|---|
+| 性質 | leak（垃圾沒回收） | 容量不足 |
+| 被清掉的 state 之後還用得到嗎 | 用不到（已在所有 window 外） | 用得到 |
+| 解法 | 依時間淘汰 | 加 shard、縮小 per-member state |
+
+**3a. 不活躍 member 堆積**
+
+現況（尚未處理）：
+- Bucket（連同 `ProcessedEventIDs`）只在同一 member、同一 behavior 有新事件時才 prune；member 不再活躍，它的 state 永遠留著。`LastSeenAt` 已記錄，但 eviction 沒實作。
+- 過期 progress 只在該 member 有新事件時才 sweep；沒設 MaxWait 的 pattern（`maxDuration() == 0`）永遠不 sweep。
+
+防禦：**依 event time 淘汰，不依記憶體壓力淘汰**。
+- `watermark - LastSeenAt > max(maxWindow, 所有 pattern 最長時限)` 的 member 直接刪除。此時它的 bucket 都在任何 window 外、progress 都已過期，對後續判斷零貢獻 → **不需要 replay 重建**，回來就當新 member。
+- 由 watermark 驅動掃描（跟 negative deadline heap 同一個時鐘），不用 wall-clock timer，維持 replay 確定性。
+- 沒設 MaxWait 的 pattern 要給上限，或禁止。
+
+**3b. 活躍集合超過記憶體**
+
+LRU 治不了這個：被踢掉的是活躍 member，很快又有事件 → replay 重建 → 再踢別人（thrashing）。重建期間該 member 的事件要嘛等、要嘛用不完整的 state 判斷，兩個都錯。Kafka 一個 partition 混著整個 shard 的 member，單一 member 重建要掃整段 partition，成本更高。
+
+防禦（依序）：
+1. **縮小 per-member state**：`ProcessedEventIDs` 目前跟 bucket 同壽命（= maxWindow），跟事件數成正比，是 per-member 最大的一塊。snapshot 與 `LastSeq` 對齊已保證 replay 不重複套用，dedup 只需防上游重送，保留時間可以跟 bucket 脫鉤、縮到分鐘級（Flink 的做法是 keyed state + State TTL）。
+2. **實測 per-member 大小**：README §Capacity sizing 的 ~7 KB 仍是估算。
+3. **加 shard**：主要的擴容手段。Key group（K=1024）讓 rescale 只搬 key group、不 rehash，per-shard state 維持 2–3 GB 以內。
+4. **磁碟型 state（RocksDB backend 類）**：最後手段。Flink 對 state 大於記憶體的解法，但每次存取都要序列化、可能碰磁碟（官方說慢一個數量級），等於放棄「hot path 純記憶體」的前提。
 
 ### 4. Snapshot 寫入停頓
 
